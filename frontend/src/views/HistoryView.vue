@@ -7,16 +7,6 @@
         <h1 class="page-title">我的创作</h1>
       </div>
       <div style="display: flex; gap: 10px;">
-        <button
-          class="btn"
-          @click="handleScanAll"
-          :disabled="isScanning"
-          style="border: 1px solid var(--border-color);"
-        >
-          <svg v-if="!isScanning" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 6px;"><path d="M23 4v6h-6"></path><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
-          <div v-else class="spinner-small" style="margin-right: 6px;"></div>
-          {{ isScanning ? '同步中...' : '同步历史' }}
-        </button>
         <button class="btn btn-primary" @click="router.push('/')">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 6px;"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
           新建图文
@@ -129,12 +119,8 @@ import {
   deleteHistory,
   getHistory,
   type HistoryRecord,
-  regenerateImage as apiRegenerateImage,
-  updateHistory,
-  scanAllTasks,
-  getTaskImages
+  regenerateImage as apiRegenerateImage
 } from '../api'
-import { useGeneratorStore } from '../stores/generator'
 
 // 引入组件
 import StatsOverview from '../components/history/StatsOverview.vue'
@@ -144,7 +130,6 @@ import OutlineModal from '../components/history/OutlineModal.vue'
 
 const router = useRouter()
 const route = useRoute()
-const store = useGeneratorStore()
 
 // 数据状态
 const records = ref<HistoryRecord[]>([])
@@ -159,7 +144,6 @@ const totalPages = ref(1)
 const viewingRecord = ref<any>(null)
 const regeneratingImages = ref<Set<number>>(new Set())
 const showOutlineModal = ref(false)
-const isScanning = ref(false)
 
 /**
  * 加载历史记录列表
@@ -341,37 +325,6 @@ function downloadAllImages() {
   link.click()
 }
 
-/**
- * 扫描所有任务并同步
- */
-async function handleScanAll() {
-  isScanning.value = true
-  try {
-    const result = await scanAllTasks()
-    if (result.success) {
-      let message = `扫描完成！\n`
-      message += `- 总任务数: ${result.total_tasks || 0}\n`
-      message += `- 同步成功: ${result.synced || 0}\n`
-      message += `- 同步失败: ${result.failed || 0}\n`
-
-      if (result.orphan_tasks && result.orphan_tasks.length > 0) {
-        message += `- 孤立任务（无记录）: ${result.orphan_tasks.length} 个\n`
-      }
-
-      alert(message)
-      await loadData()
-      await loadStats()
-    } else {
-      alert('扫描失败: ' + (result.error || '未知错误'))
-    }
-  } catch (e) {
-    console.error('扫描失败:', e)
-    alert('扫描失败: ' + String(e))
-  } finally {
-    isScanning.value = false
-  }
-}
-
 onMounted(async () => {
   await loadData()
   await loadStats()
@@ -380,38 +333,10 @@ onMounted(async () => {
   if (route.params.id) {
     await viewImages(route.params.id as string)
   }
-
-  // 自动执行一次扫描（静默，不显示结果）
-  try {
-    const result = await scanAllTasks()
-    if (result.success && (result.synced || 0) > 0) {
-      await loadData()
-      await loadStats()
-    }
-  } catch (e) {
-    console.error('自动扫描失败:', e)
-  }
 })
 </script>
 
 <style scoped>
-/* Small Spinner */
-.spinner-small {
-  width: 16px;
-  height: 16px;
-  border: 2px solid var(--primary);
-  border-top-color: transparent;
-  border-radius: 50%;
-  animation: spin 1s linear infinite;
-  display: inline-block;
-}
-
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
 /* Toolbar */
 .toolbar-wrapper {
   display: flex;
