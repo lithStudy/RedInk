@@ -47,7 +47,7 @@ def create_image_blueprint():
         try:
             data = request.get_json()
             pages = data.get('pages')
-            task_id = data.get('task_id')
+            record_id = data.get('record_id')
             full_outline = data.get('full_outline', '')
             user_topic = data.get('user_topic', '')
 
@@ -57,26 +57,26 @@ def create_image_blueprint():
 
             log_request('/generate', {
                 'pages_count': len(pages) if pages else 0,
-                'task_id': task_id,
+                'record_id': record_id,
                 'user_topic': user_topic[:50] if user_topic else None,
                 'user_images': user_images,
                 'reference_mode': reference_mode
             })
 
-            if not pages:
-                logger.warning("图片生成请求缺少 pages 参数")
+            if not pages or not record_id:
+                logger.warning("图片生成请求缺少必要参数")
                 return jsonify({
                     "success": False,
-                    "error": "参数错误：pages 不能为空。\n请提供要生成的页面列表数据。"
+                    "error": "参数错误：pages 和 record_id 不能为空。"
                 }), 400
 
-            logger.info(f"🖼️  开始图片生成任务: {task_id}, 共 {len(pages)} 页")
+            logger.info(f"🖼️  开始图片生成任务: record_id={record_id}, 共 {len(pages)} 页")
             image_service = get_image_service()
 
             def generate():
                 """SSE 事件生成器"""
                 for event in image_service.generate_images(
-                    pages, task_id, full_outline,
+                    pages, record_id, full_outline,
                     user_images=user_images if user_images else None,
                     user_topic=user_topic,
                     reference_mode=reference_mode
@@ -189,16 +189,18 @@ def create_image_blueprint():
                 'page_index': page.get('index') if page else None
             })
 
-            if not task_id or not page:
+            record_id = data.get('record_id')
+            
+            if not record_id or not page:
                 logger.warning("重试请求缺少必要参数")
                 return jsonify({
                     "success": False,
-                    "error": "参数错误：task_id 和 page 不能为空。\n请提供任务ID和页面信息。"
+                    "error": "参数错误：record_id 和 page 不能为空。"
                 }), 400
 
-            logger.info(f"🔄 重试生成图片: task={task_id}, page={page.get('index')}")
+            logger.info(f"🔄 重试生成图片: record={record_id}, page={page.get('index')}")
             image_service = get_image_service()
-            result = image_service.retry_single_image(task_id, page, use_reference)
+            result = image_service.retry_single_image(record_id, page, use_reference)
 
             if result["success"]:
                 logger.info(f"✅ 图片重试成功: {result.get('image_url')}")
@@ -279,7 +281,7 @@ def create_image_blueprint():
         重新生成图片（即使成功的也可以重新生成）
 
         请求体：
-        - task_id: 任务 ID（必填）
+        - record_id: 记录 ID（必填）
         - page: 页面信息（必填）
         - use_reference: 是否使用参考图（默认 true）
         - full_outline: 完整大纲文本（用于上下文）
@@ -292,7 +294,7 @@ def create_image_blueprint():
         """
         try:
             data = request.get_json()
-            task_id = data.get('task_id')
+            record_id = data.get('record_id')
             page = data.get('page')
             use_reference = data.get('use_reference', True)
             full_outline = data.get('full_outline', '')
@@ -300,22 +302,22 @@ def create_image_blueprint():
             reference_mode = data.get('reference_mode', 'cover')
 
             log_request('/regenerate', {
-                'task_id': task_id,
+                'record_id': record_id,
                 'page_index': page.get('index') if page else None,
                 'reference_mode': reference_mode
             })
-
-            if not task_id or not page:
+            
+            if not record_id or not page:
                 logger.warning("重新生成请求缺少必要参数")
                 return jsonify({
                     "success": False,
-                    "error": "参数错误：task_id 和 page 不能为空。\n请提供任务ID和页面信息。"
+                    "error": "参数错误：record_id 和 page 不能为空。"
                 }), 400
 
-            logger.info(f"🔄 重新生成图片: task={task_id}, page={page.get('index')}, mode={reference_mode}")
+            logger.info(f"🔄 重新生成图片: record={record_id}, page={page.get('index')}, mode={reference_mode}")
             image_service = get_image_service()
             result = image_service.regenerate_image(
-                task_id, page, use_reference,
+                record_id, page, use_reference,
                 full_outline=full_outline,
                 user_topic=user_topic,
                 reference_mode=reference_mode
@@ -387,34 +389,34 @@ def create_image_blueprint():
         自动扫描文件夹中的图片，找出未生成的页面
 
         请求体：
-        - task_id: 任务 ID（必填）
+        - record_id: 记录 ID（必填）
 
         返回：
         SSE 事件流
         """
         try:
             data = request.get_json()
-            task_id = data.get('task_id')
+            record_id = data.get('record_id')
 
             log_request('/continue-generation', {
-                'task_id': task_id
+                'record_id': record_id
             })
 
-            if not task_id:
-                logger.warning("继续生成请求缺少 task_id 参数")
+            if not record_id:
+                logger.warning("继续生成请求缺少 record_id 参数")
                 return jsonify({
                     "success": False,
-                    "error": "参数错误：task_id 不能为空"
+                    "error": "参数错误：record_id 不能为空"
                 }), 400
-
-            logger.info(f"▶️ 继续任务: {task_id}")
+            
+            logger.info(f"▶️ 继续任务: record={record_id}")
             image_service = get_image_service()
 
             def generate():
                 """SSE 事件生成器"""
                 # 不传入 pages，让服务自动扫描未完成的页面
                 for event in image_service.continue_generation(
-                    task_id, pages=None, full_outline="", user_topic=""
+                    record_id, pages=None, full_outline="", user_topic=""
                 ):
                     event_type = event["event"]
                     event_data = event["data"]

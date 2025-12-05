@@ -6,6 +6,11 @@ export interface Page {
   index: number
   type: 'cover' | 'content' | 'summary'
   content: string
+  image?: {
+    id: number
+    filename: string
+    thumbnail_filename: string
+  } | null
 }
 
 export interface OutlineMetadata {
@@ -18,7 +23,7 @@ export interface OutlineResponse {
   success: boolean
   outline?: string
   pages?: Page[]
-  task_id?: string
+  record_id?: string
   error?: string
   metadata?: OutlineMetadata
 }
@@ -34,7 +39,7 @@ export interface ProgressEvent {
 
 export interface FinishEvent {
   success: boolean
-  task_id: string
+  record_id: string
   images: string[]
 }
 
@@ -45,28 +50,28 @@ export interface ToneResponse {
 }
 
 // 生成基调
-export async function generateTone(topic: string): Promise<ToneResponse & { task_id?: string }> {
-  const response = await axios.post<ToneResponse & { task_id?: string }>(`${API_BASE_URL}/tone`, {
+export async function generateTone(topic: string): Promise<ToneResponse & { record_id?: string }> {
+  const response = await axios.post<ToneResponse & { record_id?: string }>(`${API_BASE_URL}/tone`, {
     topic
   })
   return response.data
 }
 
 // 获取基调
-export async function getTone(taskId: string): Promise<ToneResponse> {
-  const response = await axios.get<ToneResponse>(`${API_BASE_URL}/tone/${taskId}`)
+export async function getTone(recordId: string): Promise<ToneResponse> {
+  const response = await axios.get<ToneResponse>(`${API_BASE_URL}/tone/${recordId}`)
   return response.data
 }
 
 // 更新基调
-export async function updateTone(taskId: string, tone: string): Promise<{ success: boolean; error?: string }> {
-  const response = await axios.put(`${API_BASE_URL}/tone/${taskId}`, { tone })
+export async function updateTone(recordId: string, tone: string): Promise<{ success: boolean; error?: string }> {
+  const response = await axios.put(`${API_BASE_URL}/tone/${recordId}`, { tone })
   return response.data
 }
 
 // 更新大纲（例如删除页面后）
-export async function updateOutline(taskId: string, pages: Page[]): Promise<{ success: boolean; error?: string }> {
-  const response = await axios.put(`${API_BASE_URL}/outline/${taskId}`, { pages })
+export async function updateOutline(recordId: string, pages: Page[]): Promise<{ success: boolean; error?: string }> {
+  const response = await axios.put(`${API_BASE_URL}/outline/${recordId}`, { pages })
   return response.data
 }
 
@@ -75,7 +80,7 @@ export async function generateOutline(
   topic: string,
   images?: File[],
   tone?: string,
-  taskId?: string
+  recordId?: string
 ): Promise<OutlineResponse & { has_images?: boolean }> {
   // 如果有图片，使用 FormData
   if (images && images.length > 0) {
@@ -84,8 +89,8 @@ export async function generateOutline(
     if (tone) {
       formData.append('tone', tone)
     }
-    if (taskId) {
-      formData.append('task_id', taskId)
+    if (recordId) {
+      formData.append('record_id', recordId)
     }
     images.forEach((file) => {
       formData.append('images', file)
@@ -107,21 +112,21 @@ export async function generateOutline(
   const response = await axios.post<OutlineResponse>(`${API_BASE_URL}/outline`, {
     topic,
     tone,
-    task_id: taskId
+    record_id: recordId
   })
   return response.data
 }
 
-// 获取图片 URL（新格式：task_id/filename）
+// 获取图片 URL（新格式：record_id/filename）
 // thumbnail 参数：true=缩略图（默认），false=原图
-export function getImageUrl(taskId: string, filename: string, thumbnail: boolean = true): string {
+export function getImageUrl(recordId: string, filename: string, thumbnail: boolean = true): string {
   const thumbParam = thumbnail ? '?thumbnail=true' : '?thumbnail=false'
-  return `${API_BASE_URL}/images/${taskId}/${filename}${thumbParam}`
+  return `${API_BASE_URL}/images/${recordId}/${filename}${thumbParam}`
 }
 
 // 重新生成图片（即使成功的也可以重新生成）
 export async function regenerateImage(
-  taskId: string,
+  recordId: string,
   page: Page,
   useReference: boolean = true,
   context?: {
@@ -131,7 +136,7 @@ export async function regenerateImage(
   referenceMode?: 'custom' | 'cover' | 'previous'
 ): Promise<{ success: boolean; index: number; image_url?: string; error?: string }> {
   const response = await axios.post(`${API_BASE_URL}/regenerate`, {
-    task_id: taskId,
+    record_id: recordId,
     page,
     use_reference: useReference,
     full_outline: context?.fullOutline,
@@ -143,7 +148,7 @@ export async function regenerateImage(
 
 // 批量重试失败的图片（SSE）
 export async function retryFailedImages(
-  taskId: string,
+  recordId: string,
   pages: Page[],
   onProgress: (event: ProgressEvent) => void,
   onComplete: (event: ProgressEvent) => void,
@@ -158,7 +163,7 @@ export async function retryFailedImages(
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        task_id: taskId,
+        record_id: recordId,
         pages
       })
     })
@@ -230,7 +235,6 @@ export interface HistoryRecord {
   status: string
   thumbnail: string | null
   page_count: number
-  task_id: string | null
 }
 
 export interface HistoryDetail {
@@ -243,10 +247,6 @@ export interface HistoryDetail {
     pages: Page[]
     metadata?: OutlineMetadata
   }
-  images: {
-    task_id: string | null
-    generated: string[]
-  }
   status: string
   thumbnail: string | null
 }
@@ -255,12 +255,12 @@ export interface HistoryDetail {
 export async function createHistory(
   topic: string,
   outline: { raw: string; pages: Page[] },
-  taskId?: string
+  recordId?: string
 ): Promise<{ success: boolean; record_id?: string; error?: string }> {
   const response = await axios.post(`${API_BASE_URL}/history`, {
     topic,
     outline,
-    task_id: taskId
+    record_id: recordId
   })
   return response.data
 }
@@ -300,7 +300,7 @@ export async function updateHistory(
   recordId: string,
   data: {
     outline?: { raw: string; pages: Page[]; metadata?: OutlineMetadata }
-    images?: { task_id: string | null; generated: string[] }
+    images?: { generated: string[] }
     status?: string
     thumbnail?: string
   }
@@ -342,7 +342,7 @@ export async function getHistoryStats(): Promise<{
 // 使用 POST 方式生成图片（更可靠）
 export async function generateImagesPost(
   pages: Page[],
-  taskId: string | null,
+  recordId: string,
   fullOutline: string,
   onProgress: (event: ProgressEvent) => void,
   onComplete: (event: ProgressEvent) => void,
@@ -351,7 +351,7 @@ export async function generateImagesPost(
   onStreamError: (error: Error) => void,
   userImages?: File[],
   userTopic?: string,
-  onStopped?: (event: { task_id: string; message: string; completed: number; pending: number }) => void,
+  onStopped?: (event: { record_id: string; message: string; completed: number; pending: number }) => void,
   referenceMode?: 'custom' | 'cover' | 'previous'
 ) {
   try {
@@ -377,7 +377,7 @@ export async function generateImagesPost(
       },
       body: JSON.stringify({
         pages,
-        task_id: taskId,
+        record_id: recordId,
         full_outline: fullOutline,
         user_images: userImagesBase64.length > 0 ? userImagesBase64 : undefined,
         user_topic: userTopic || '',
@@ -446,25 +446,25 @@ export async function generateImagesPost(
 }
 
 // 停止图片生成
-export async function stopGeneration(taskId: string): Promise<{
+export async function stopGeneration(recordId: string): Promise<{
   success: boolean
   message?: string
   error?: string
 }> {
   const response = await axios.post(`${API_BASE_URL}/stop-generation`, {
-    task_id: taskId
+    record_id: recordId
   })
   return response.data
 }
 
 // 继续图片生成（SSE）- 自动扫描未完成的页面
 export async function continueGeneration(
-  taskId: string,
+  recordId: string,
   onProgress: (event: ProgressEvent) => void,
   onComplete: (event: ProgressEvent) => void,
   onError: (event: ProgressEvent) => void,
   onFinish: (event: FinishEvent) => void,
-  onStopped: (event: { task_id: string; message: string; completed: number; pending: number }) => void,
+  onStopped: (event: { record_id: string; message: string; completed: number; pending: number }) => void,
   onStreamError: (error: Error) => void
 ) {
   try {
@@ -474,7 +474,7 @@ export async function continueGeneration(
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        task_id: taskId
+        record_id: recordId
       })
     })
 
@@ -541,8 +541,8 @@ export async function continueGeneration(
   }
 }
 
-// 获取任务文件夹中的图片列表（扫描文件系统）
-export async function getTaskImages(taskId: string): Promise<{
+// 获取记录文件夹中的图片列表（扫描文件系统）
+export async function getTaskImages(recordId: string): Promise<{
   success: boolean
   images?: string[]
   generated_indices?: number[]
@@ -555,7 +555,7 @@ export async function getTaskImages(taskId: string): Promise<{
   }
   error?: string
 }> {
-  const response = await axios.get(`${API_BASE_URL}/task/${taskId}/images`)
+  const response = await axios.get(`${API_BASE_URL}/task/${recordId}/images`)
   return response.data
 }
 

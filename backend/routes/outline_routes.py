@@ -48,10 +48,20 @@ def create_outline_blueprint():
                     "error": "参数错误：topic 不能为空。\n请提供要生成基调的主题内容。"
                 }), 400
 
+            # 先创建记录
+            from backend.services.history import get_history_service
+            history_service = get_history_service()
+            record_id = history_service.create_record(topic=topic, title="", status="draft")
+            logger.info(f"✅ 创建记录: record_id={record_id}")
+            
             # 调用基调生成服务
             logger.info(f"🔄 开始生成基调，主题: {topic[:50]}...")
             outline_service = get_outline_service()
-            result = outline_service.generate_tone(topic)
+            result = outline_service.generate_tone(topic, record_id)
+            
+            # 在返回结果中添加 record_id
+            if result["success"]:
+                result["record_id"] = record_id
 
             # 记录结果
             elapsed = time.time() - start_time
@@ -93,9 +103,9 @@ def create_outline_blueprint():
 
         try:
             # 解析请求数据
-            topic, images, tone, task_id = _parse_outline_request()
+            topic, images, tone, record_id = _parse_outline_request()
 
-            log_request('/outline', {'topic': topic, 'images': images, 'tone': '已提供' if tone else '未提供', 'task_id': task_id})
+            log_request('/outline', {'topic': topic, 'images': images, 'tone': '已提供' if tone else '未提供', 'record_id': record_id})
 
             # 验证必填参数
             if not topic:
@@ -105,10 +115,21 @@ def create_outline_blueprint():
                     "error": "参数错误：topic 不能为空。\n请提供要生成图文的主题内容。"
                 }), 400
 
+            # 如果没有 record_id，先创建记录
+            from backend.services.history import get_history_service
+            if not record_id:
+                history_service = get_history_service()
+                record_id = history_service.create_record(topic=topic, title="", status="draft")
+                logger.info(f"✅ 创建记录: record_id={record_id}")
+
             # 调用大纲生成服务
-            logger.info(f"🔄 开始生成大纲，主题: {topic[:50]}...")
+            logger.info(f"🔄 开始生成大纲，主题: {topic[:50]}..., record_id={record_id}")
             outline_service = get_outline_service()
-            result = outline_service.generate_outline(topic, images if images else None, tone, task_id)
+            result = outline_service.generate_outline(topic, record_id, images if images else None, tone)
+            
+            # 在返回结果中添加 record_id
+            if result["success"]:
+                result["record_id"] = record_id
 
             # 记录结果
             elapsed = time.time() - start_time
@@ -127,22 +148,22 @@ def create_outline_blueprint():
                 "error": f"大纲生成异常。\n错误详情: {error_msg}\n建议：检查后端日志获取更多信息"
             }), 500
 
-    @outline_bp.route('/tone/<task_id>', methods=['GET'])
-    def get_tone(task_id: str):
+    @outline_bp.route('/tone/<record_id>', methods=['GET'])
+    def get_tone(record_id: str):
         """
-        获取任务关联的基调
+        获取记录关联的基调
 
         路径参数：
-        - task_id: 任务ID
+        - record_id: 记录ID
 
         返回：
         - success: 是否成功
         - tone: 基调文本
         """
         try:
-            logger.info(f"🔄 读取基调，任务ID: {task_id}")
+            logger.info(f"🔄 读取基调，记录ID: {record_id}")
             outline_service = get_outline_service()
-            result = outline_service.get_tone(task_id)
+            result = outline_service.get_tone(record_id)
 
             if result["success"]:
                 logger.info("✅ 读取基调成功")
@@ -159,13 +180,13 @@ def create_outline_blueprint():
                 "error": f"读取基调异常。\n错误详情: {error_msg}\n建议：检查后端日志获取更多信息"
             }), 500
 
-    @outline_bp.route('/tone/<task_id>', methods=['PUT'])
-    def update_tone(task_id: str):
+    @outline_bp.route('/tone/<record_id>', methods=['PUT'])
+    def update_tone(record_id: str):
         """
-        更新任务关联的基调
+        更新记录关联的基调
 
         路径参数：
-        - task_id: 任务ID
+        - record_id: 记录ID
 
         请求体：
         - tone: 基调文本
@@ -184,9 +205,9 @@ def create_outline_blueprint():
                     "error": "参数错误：tone 不能为空。"
                 }), 400
 
-            logger.info(f"🔄 更新基调，任务ID: {task_id}")
+            logger.info(f"🔄 更新基调，记录ID: {record_id}")
             outline_service = get_outline_service()
-            result = outline_service.update_tone(task_id, tone_text)
+            result = outline_service.update_tone(record_id, tone_text)
 
             if result["success"]:
                 logger.info("✅ 更新基调成功")
@@ -203,13 +224,13 @@ def create_outline_blueprint():
                 "error": f"更新基调异常。\n错误详情: {error_msg}\n建议：检查后端日志获取更多信息"
             }), 500
 
-    @outline_bp.route('/outline/<task_id>', methods=['PUT'])
-    def update_outline_route(task_id: str):
+    @outline_bp.route('/outline/<record_id>', methods=['PUT'])
+    def update_outline_route(record_id: str):
         """
-        更新任务的大纲（例如删除页面后）
+        更新记录的大纲（例如删除页面后）
 
         路径参数：
-        - task_id: 任务ID
+        - record_id: 记录ID
 
         请求体：
         - pages: 新的页面列表
@@ -228,9 +249,9 @@ def create_outline_blueprint():
                     "error": "参数错误：pages 不能为空。"
                 }), 400
 
-            logger.info(f"🔄 更新大纲，任务ID: {task_id}, 页面数: {len(pages)}")
+            logger.info(f"🔄 更新大纲，记录ID: {record_id}, 页面数: {len(pages)}")
             outline_service = get_outline_service()
-            result = outline_service.update_outline(task_id, pages)
+            result = outline_service.update_outline(record_id, pages)
 
             if result["success"]:
                 logger.info("✅ 更新大纲成功")
@@ -259,16 +280,16 @@ def _parse_outline_request():
     2. application/json - 用于 base64 图片和基调
 
     返回：
-        tuple: (topic, images, tone, task_id) - 主题、图片列表、基调和任务ID
+        tuple: (topic, images, tone, record_id) - 主题、图片列表、基调和记录ID
     """
     tone = None
-    task_id = None
+    record_id = None
     
     # 检查是否是 multipart/form-data（带图片文件）
     if request.content_type and 'multipart/form-data' in request.content_type:
         topic = request.form.get('topic')
         tone = request.form.get('tone')  # 支持从 form 中获取基调
-        task_id = request.form.get('task_id')  # 支持从 form 中获取任务ID
+        record_id = request.form.get('record_id')  # 支持从 form 中获取记录ID
         images = []
 
         # 获取上传的图片文件
@@ -279,13 +300,13 @@ def _parse_outline_request():
                     image_data = file.read()
                     images.append(image_data)
 
-        return topic, images, tone, task_id
+        return topic, images, tone, record_id
 
     # JSON 请求（无图片或 base64 图片）
     data = request.get_json()
     topic = data.get('topic')
     tone = data.get('tone')  # 从 JSON 中获取基调
-    task_id = data.get('task_id')  # 从 JSON 中获取任务ID
+    record_id = data.get('record_id')  # 从 JSON 中获取记录ID
     images = []
 
     # 支持 base64 格式的图片
@@ -297,4 +318,4 @@ def _parse_outline_request():
                 img_b64 = img_b64.split(',')[1]
             images.append(base64.b64decode(img_b64))
 
-    return topic, images, tone, task_id
+    return topic, images, tone, record_id

@@ -158,15 +158,13 @@ def create_history_blueprint():
             outline = data.get('outline')
             images = data.get('images')
             status = data.get('status')
-            thumbnail = data.get('thumbnail')
 
             history_service = get_history_service()
             success = history_service.update_record(
                 record_id,
                 outline=outline,
                 images=images,
-                status=status,
-                thumbnail=thumbnail
+                status=status
             )
 
             if not success:
@@ -364,12 +362,8 @@ def create_history_blueprint():
                     "error": f"历史记录不存在：{record_id}"
                 }), 404
 
-            task_id = record.get('images', {}).get('task_id')
-            if not task_id:
-                return jsonify({
-                    "success": False,
-                    "error": "该记录没有关联的任务图片"
-                }), 404
+            # 使用 record_id 作为任务目录（图片存储在 history/{record_id}/ 目录下）
+            task_id = record_id
 
             # 获取任务目录
             task_dir = os.path.join(history_service.history_dir, task_id)
@@ -425,14 +419,16 @@ def _create_images_zip(task_dir: str, pages: list = None) -> io.BytesIO:
         if pages:
             # 如果提供了页面顺序，按照页面顺序打包
             for display_index, page in enumerate(pages, start=1):
-                page_index = page.get('index')
-                filename = f"{page_index}.png"
-                file_path = os.path.join(task_dir, filename)
-                
-                # 检查文件是否存在
-                if os.path.exists(file_path):
-                    archive_name = f"page_{display_index}.png"
-                    zf.write(file_path, archive_name)
+                # 从 page.image.filename 获取图片文件名
+                image = page.get('image')
+                if image and image.get('filename'):
+                    filename = image['filename']
+                    file_path = os.path.join(task_dir, filename)
+                    
+                    # 检查文件是否存在
+                    if os.path.exists(file_path):
+                        archive_name = f"page_{display_index}.png"
+                        zf.write(file_path, archive_name)
         else:
             # 如果没有提供页面顺序，使用原有逻辑（兼容旧代码）
             for filename in os.listdir(task_dir):

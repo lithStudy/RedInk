@@ -501,7 +501,7 @@
 import { ref, computed, nextTick, watch, onMounted, onUnmounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useGeneratorStore } from '../stores/generator'
-import { updateHistory, regenerateImage as apiRegenerateImage, generateImagesPost, retryFailedImages as apiRetryFailed, createHistory, getTaskImages, stopGeneration as apiStopGeneration, continueGeneration as apiContinueGeneration, getTone, generateOutline, updateTone, getHistory, updateOutline } from '../api'
+import { updateHistory, regenerateImage as apiRegenerateImage, generateImagesPost, retryFailedImages as apiRetryFailed, createHistory, stopGeneration as apiStopGeneration, continueGeneration as apiContinueGeneration, getTone, generateOutline, updateTone, getHistory, updateOutline } from '../api'
 
 const router = useRouter()
 const route = useRoute()
@@ -510,6 +510,7 @@ const store = useGeneratorStore()
 const dragOverIndex = ref<number | null>(null)
 const draggedIndex = ref<number | null>(null)
 const saveStatus = ref<'saved' | 'saving' | 'idle'>('idle')
+const isLoadingData = ref(false)  // 标记是否正在加载数据，用于避免加载时触发自动保存
 
 // 跟踪每个卡片的翻转状态
 const flippedCards = ref<Set<number>>(new Set())
@@ -703,6 +704,10 @@ function debouncedSave() {
 watch(
   () => store.outline,
   () => {
+    // 如果正在加载数据，不触发自动保存（避免刷新页面时重复更新）
+    if (isLoadingData.value) {
+      return
+    }
     debouncedSave()
     store.saveToStorage()  // 同时保存到缓存
   },
@@ -740,6 +745,9 @@ watch(
 async function loadDataFromBackend(recordId: string) {
   console.log(`🔄 从后端加载任务数据: recordId=${recordId}`)
   
+  // 标记开始加载数据，避免触发自动保存
+  isLoadingData.value = true
+  
   try {
     const res = await getHistory(recordId)
     if (!res.success || !res.record) {
@@ -752,91 +760,30 @@ async function loadDataFromBackend(recordId: string) {
     
     // 设置基本信息
     store.recordId = record.id
-    store.taskId = record.images.task_id
+    store.taskId = record.id  // task_id 就是 record_id
     store.setTopic(record.title)
 
-    // 如果有 task_id，优先从任务文件夹加载数据
-    if (record.images.task_id) {
-      try {
-        const taskImagesRes = await getTaskImages(record.images.task_id)
-        if (taskImagesRes.success) {
-          // 优先使用任务文件夹中的大纲
-          if (taskImagesRes.outline && taskImagesRes.outline.pages && taskImagesRes.outline.pages.length > 0) {
-            const outline = taskImagesRes.outline
-            console.log('📂 任务文件夹大纲数据:', outline)
-            console.log('📱 元数据:', outline.metadata)
-            store.setTopic(outline.topic || record.title)
-            store.setOutline(
-              outline.raw || record.outline.raw,
-              outline.pages,
-              outline.metadata
-            )
-            console.log('✅ 从任务文件夹加载大纲:', outline.pages.length, '页')
-          } else {
-            console.log('📋 历史记录大纲数据:', record.outline)
-            console.log('📱 元数据:', record.outline.metadata)
-            store.setOutline(record.outline.raw, record.outline.pages, record.outline.metadata)
-            console.log('⚠️ 任务文件夹无大纲，从历史记录加载:', record.outline.pages.length, '页')
-          }
-          
-          // 加载图片
-          if (taskImagesRes.generated_indices) {
-            const generatedSet = new Set(taskImagesRes.generated_indices)
-            const pages = taskImagesRes.outline?.pages || record.outline.pages
-            store.images = pages.map((page: any) => {
-              const pageIndex = page.index
-              if (generatedSet.has(pageIndex)) {
-                const filename = `${pageIndex}.png`
-                const timestamp = Date.now()
-                const imageUrl = `/api/images/${record.images.task_id}/${filename}?t=${timestamp}`
-                return {
-                  index: pageIndex,
-                  url: imageUrl,
-                  status: 'done' as const,
-                  retryable: true
-                }
-              } else {
-                return {
-                  index: pageIndex,
-                  url: '',
-                  status: 'error' as const,
-                  retryable: true
-                }
-              }
-            })
-            console.log('✅ 从任务文件夹加载图片:', taskImagesRes.generated_indices.length, '张')
-          }
-        } else {
-          // 扫描失败，使用历史记录中的数据
-          store.setOutline(record.outline.raw, record.outline.pages, record.outline.metadata)
-          store.images = record.outline.pages.map((page) => ({
-            index: page.index,
-            url: '',
-            status: 'error' as const,
-            retryable: true
-          }))
-          console.log('⚠️ 扫描失败，使用历史记录数据')
-        }
-      } catch (e) {
-        console.error('❌ 加载任务数据失败:', e)
-        store.setOutline(record.outline.raw, record.outline.pages, record.outline.metadata)
-        store.images = record.outline.pages.map((page) => ({
-          index: page.index,
-          url: '',
-          status: 'error' as const,
-          retryable: true
-        }))
-      }
-    } else {
-      // 没有 task_id
-      store.setOutline(record.outline.raw, record.outline.pages, record.outline.metadata)
-      store.images = record.outline.pages.map((page) => ({
+    // 直接从历史记录中加载大纲和图片数据
+    console.log('📋 历史记录大纲数据:', record.outline)
+    console.log('📱 元数据:', record.outline.metadata)
+    store.setOutline(record.outline.raw, record.outline.pages, record.outline.metadata)
+    
+    // 从 pages 中加载图片信息
+    store.images = record.outline.pages.map((page) => {
+      const imageUrl = page.image?.filename 
+        ? `/api/images/${record.id}/${page.image.filename}`
+        : ''
+      const status: 'done' | 'error' = page.image ? 'done' : 'error'
+      return {
         index: page.index,
-        url: '',
-        status: 'error' as const,
+        url: imageUrl,
+        status,
         retryable: true
-      }))
-    }
+      }
+    })
+    
+    const imageCount = store.images.filter(img => img.status === 'done').length
+    console.log('✅ 从历史记录加载数据:', record.outline.pages.length, '页,', imageCount, '张图片')
 
     // 读取基调
     if (store.taskId) {
@@ -867,6 +814,9 @@ async function loadDataFromBackend(recordId: string) {
   } catch (err) {
     console.error('❌ 加载数据失败:', err)
     router.push('/')
+  } finally {
+    // 标记加载完成，恢复自动保存功能
+    isLoadingData.value = false
   }
 }
 
@@ -1349,7 +1299,7 @@ async function stopGeneration() {
 
 // 继续生成
 async function continueGeneration() {
-  if (!store.taskId || isContinuing.value) return
+  if (!store.recordId || isContinuing.value) return
 
   isContinuing.value = true
   error.value = ''
@@ -1364,9 +1314,9 @@ async function continueGeneration() {
   })
 
   try {
-    // 只需要传入 taskId，后端会自动扫描未完成的页面
+    // 只需要传入 recordId，后端会自动扫描未完成的页面
     await apiContinueGeneration(
-      store.taskId,
+      store.recordId,
       // onProgress
       (event) => {
         console.log('Continue Progress:', event)
@@ -1754,8 +1704,8 @@ async function generatePageImage(pageIndex: number) {
 
 // 重新生成图片
 async function regeneratePageImage(pageIndex: number) {
-  if (!store.taskId) {
-    alert('任务ID未找到，无法重新生成')
+  if (!store.recordId) {
+    alert('记录ID未找到，无法重新生成')
     return
   }
 
@@ -1783,7 +1733,7 @@ async function regeneratePageImage(pageIndex: number) {
 
     // 调用重新生成 API
     const result = await apiRegenerateImage(
-      store.taskId,
+      store.recordId,
       page,
       true, // useReference
       context,

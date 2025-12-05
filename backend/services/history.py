@@ -1,9 +1,9 @@
 import os
-import json
 import uuid
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 from pathlib import Path
+from backend.models import RecordModel, ToneModel, OutlineModel, PageModel, ImageModel
 
 
 class HistoryService:
@@ -14,160 +14,219 @@ class HistoryService:
         )
         os.makedirs(self.history_dir, exist_ok=True)
 
-        self.index_file = os.path.join(self.history_dir, "index.json")
-        self._init_index()
-
-    def _init_index(self):
-        if not os.path.exists(self.index_file):
-            with open(self.index_file, "w", encoding="utf-8") as f:
-                json.dump({"records": []}, f, ensure_ascii=False, indent=2)
-
-    def _load_index(self) -> Dict:
-        try:
-            with open(self.index_file, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            return {"records": []}
-
-    def _save_index(self, index: Dict):
-        with open(self.index_file, "w", encoding="utf-8") as f:
-            json.dump(index, f, ensure_ascii=False, indent=2)
-
-    def _get_record_path(self, record_id: str) -> str:
-        return os.path.join(self.history_dir, f"{record_id}.json")
-
     def create_record(
         self,
         topic: str,
-        outline: Dict,
-        task_id: Optional[str] = None
+        title: str = "",
+        status: str = "draft"
     ) -> str:
+        """
+        创建记录
+        
+        Args:
+            topic: 用户输入的主题/需求
+            title: AI 生成的标题（可选，大纲生成后会更新）
+            status: 状态
+            
+        Returns:
+            记录 ID
+        """
         record_id = str(uuid.uuid4())
-        now = datetime.now().isoformat()
-
-        record = {
-            "id": record_id,
-            "title": topic,
-            "created_at": now,
-            "updated_at": now,
-            "outline": outline,
-            "images": {
-                "task_id": task_id,
-                "generated": []
-            },
-            "status": "draft",  # draft/completed
-            "thumbnail": None
-        }
-
-        record_path = self._get_record_path(record_id)
-        with open(record_path, "w", encoding="utf-8") as f:
-            json.dump(record, f, ensure_ascii=False, indent=2)
-
-        index = self._load_index()
-        index["records"].insert(0, {
-            "id": record_id,
-            "title": topic,
-            "created_at": now,
-            "updated_at": now,
-            "status": "draft",
-            "thumbnail": None,
-            "page_count": len(outline.get("pages", [])),
-            "task_id": task_id
-        })
-        self._save_index(index)
-
+        RecordModel.create(
+            record_id=record_id,
+            title=title,
+            topic=topic,
+            status=status,
+            reference_images=None
+        )
         return record_id
 
     def get_record(self, record_id: str) -> Optional[Dict]:
-        record_path = self._get_record_path(record_id)
-
-        if not os.path.exists(record_path):
+        """
+        获取完整记录信息（包含 outline、pages 等，图片信息整合在 pages 中）
+        
+        Args:
+            record_id: 记录 ID
+            
+        Returns:
+            完整记录数据
+        """
+        record = RecordModel.get(record_id)
+        if not record:
             return None
-
-        try:
-            with open(record_path, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            return None
+        
+        # 获取大纲信息（通过 tone_id）
+        tone = ToneModel.get_by_record(record_id)
+        outline = None
+        if tone:
+            outline = OutlineModel.get_by_tone(tone['id'])
+        if outline:
+            record['outline'] = {
+                'raw': outline['raw_outline'],
+                'metadata': {
+                    'title': outline['metadata_title'],
+                    'content': outline['metadata_content'],
+                    'tags': outline['metadata_tags']
+                }
+            }
+            
+            # 获取页面列表（已包含图片信息）
+            pages = PageModel.get_by_outline(outline['id'])
+            record['outline']['pages'] = [
+                {
+                    'index': p['page_index'],
+                    'type': p['page_type'],
+                    'content': p['content'],
+                    'image': p.get('image')  # 图片信息（如果有）
+                }
+                for p in pages
+            ]
+            
+            # 获取缩略图（从 cover 页面的图片）
+            thumbnail = None
+            for page in pages:
+                if page['page_type'] == 'cover' and page.get('image'):
+                    thumbnail = page['image']['filename']
+                    break
+            
+            # 如果没找到 cover 图片，使用第一张有图片的页面
+            if not thumbnail:
+                for page in pages:
+                    if page.get('image'):
+                        thumbnail = page['image']['filename']
+                        break
+            
+            record['thumbnail'] = thumbnail
+        else:
+            record['thumbnail'] = None
+        
+        return record
 
     def update_record(
         self,
         record_id: str,
-        outline: Optional[Dict] = None,
-        images: Optional[Dict] = None,
+        title: Optional[str] = None,
         status: Optional[str] = None,
-        thumbnail: Optional[str] = None
+        outline: Optional[Dict] = None,
+        images: Optional[Dict] = None
     ) -> bool:
-        record = self.get_record(record_id)
-        if not record:
-            return False
-
-        now = datetime.now().isoformat()
-        record["updated_at"] = now
-
-        if outline is not None:
-            record["outline"] = outline
-
-        if images is not None:
-            record["images"] = images
-
-        if status is not None:
-            record["status"] = status
-
-        if thumbnail is not None:
-            record["thumbnail"] = thumbnail
-
-        record_path = self._get_record_path(record_id)
-        with open(record_path, "w", encoding="utf-8") as f:
-            json.dump(record, f, ensure_ascii=False, indent=2)
-
-        index = self._load_index()
-        for idx_record in index["records"]:
-            if idx_record["id"] == record_id:
-                idx_record["updated_at"] = now
-                if status:
-                    idx_record["status"] = status
-                if thumbnail:
-                    idx_record["thumbnail"] = thumbnail
-                if outline:
-                    idx_record["page_count"] = len(outline.get("pages", []))
-                if images is not None and images.get("task_id"):
-                    idx_record["task_id"] = images.get("task_id")
-                break
-
-        self._save_index(index)
+        """
+        更新记录
+        
+        Args:
+            record_id: 记录 ID
+            title: 标题
+            status: 状态
+            outline: 大纲数据（包含 raw, metadata, pages）
+            images: 图片数据（暂时保留兼容性，实际图片通过 ImageModel 管理）
+            
+        Returns:
+            是否成功
+        """
+        # 更新基本信息
+        RecordModel.update(
+            record_id=record_id,
+            title=title,
+            status=status
+        )
+        
+        # 更新大纲
+        if outline:
+            metadata = outline.get('metadata', {})
+            # 先获取 tone_id
+            tone = ToneModel.get_by_record(record_id)
+            if tone:
+                OutlineModel.update(
+                    tone_id=tone['id'],
+                    raw_outline=outline.get('raw'),
+                    metadata_title=metadata.get('title'),
+                    metadata_content=metadata.get('content'),
+                    metadata_tags=metadata.get('tags')
+                )
+            
+            # 更新页面（删除旧的，创建新的）
+            if 'pages' in outline:
+                # 获取 outline_id（通过 tone_id）
+                tone = ToneModel.get_by_record(record_id)
+                if tone:
+                    outline_obj = OutlineModel.get_by_tone(tone['id'])
+                    if outline_obj:
+                        PageModel.delete_by_outline(outline_obj['id'])
+                        pages_data = [
+                            {
+                                'outline_id': outline_obj['id'],
+                                'page_index': page['index'],
+                                'page_type': page['type'],
+                                'content': page['content'],
+                                'image_id': None
+                            }
+                            for page in outline['pages']
+                        ]
+                        PageModel.bulk_create(pages_data)
+        
         return True
 
     def delete_record(self, record_id: str) -> bool:
-        record = self.get_record(record_id)
+        """
+        删除记录及其关联的所有数据和文件
+        
+        Args:
+            record_id: 记录 ID
+            
+        Returns:
+            是否成功
+        """
+        record = RecordModel.get(record_id)
         if not record:
             return False
-
-        # 删除任务图片目录
-        if record.get("images") and record["images"].get("task_id"):
-            task_id = record["images"]["task_id"]
-            task_dir = os.path.join(self.history_dir, task_id)
-            if os.path.exists(task_dir) and os.path.isdir(task_dir):
+        
+        # 获取所有图片文件名，用于删除文件
+        images = ImageModel.get_by_record(record_id)
+        
+        # 删除数据库记录（级联删除）
+        RecordModel.delete(record_id)
+        
+        # 删除图片文件
+        # 注意：由于没有 task_id，我们需要遍历 history 目录查找图片
+        # 图片文件名格式：{record_id}_{timestamp}_{random}.png
+        for img in images:
+            # 删除原图
+            img_path = self._find_image_path(img['filename'])
+            if img_path and os.path.exists(img_path):
                 try:
-                    import shutil
-                    shutil.rmtree(task_dir)
-                    print(f"已删除任务目录: {task_dir}")
+                    os.remove(img_path)
                 except Exception as e:
-                    print(f"删除任务目录失败: {task_dir}, {e}")
-
-        # 删除记录JSON文件
-        record_path = self._get_record_path(record_id)
-        try:
-            os.remove(record_path)
-        except Exception:
-            return False
-
-        # 更新索引
-        index = self._load_index()
-        index["records"] = [r for r in index["records"] if r["id"] != record_id]
-        self._save_index(index)
-
+                    print(f"删除图片失败: {img_path}, {e}")
+            
+            # 删除缩略图
+            if img['thumbnail_filename']:
+                thumb_path = self._find_image_path(img['thumbnail_filename'])
+                if thumb_path and os.path.exists(thumb_path):
+                    try:
+                        os.remove(thumb_path)
+                    except Exception as e:
+                        print(f"删除缩略图失败: {thumb_path}, {e}")
+        
         return True
+
+    def _find_image_path(self, filename: str) -> Optional[str]:
+        """
+        在 history 目录中查找图片文件
+        
+        Args:
+            filename: 文件名
+            
+        Returns:
+            完整路径
+        """
+        # 遍历 history 目录下的所有 task_ 文件夹
+        for item in os.listdir(self.history_dir):
+            if item.startswith('task_'):
+                task_dir = os.path.join(self.history_dir, item)
+                img_path = os.path.join(task_dir, filename)
+                if os.path.exists(img_path):
+                    return img_path
+        return None
 
     def list_records(
         self,
@@ -175,48 +234,48 @@ class HistoryService:
         page_size: int = 20,
         status: Optional[str] = None
     ) -> Dict:
-        index = self._load_index()
-        records = index.get("records", [])
-
-        if status:
-            records = [r for r in records if r.get("status") == status]
-
-        total = len(records)
-        start = (page - 1) * page_size
-        end = start + page_size
-        page_records = records[start:end]
-
-        return {
-            "records": page_records,
-            "total": total,
-            "page": page,
-            "page_size": page_size,
-            "total_pages": (total + page_size - 1) // page_size
-        }
+        """
+        列出记录
+        
+        Args:
+            page: 页码
+            page_size: 每页数量
+            status: 状态筛选
+            
+        Returns:
+            包含 records, total, page, page_size, total_pages 的字典
+        """
+        return RecordModel.list(page=page, page_size=page_size, status=status)
 
     def search_records(self, keyword: str) -> List[Dict]:
-        index = self._load_index()
-        records = index.get("records", [])
-
-        keyword_lower = keyword.lower()
-        results = [
-            r for r in records
-            if keyword_lower in r.get("title", "").lower()
-        ]
-
-        return results
+        """
+        搜索记录
+        
+        Args:
+            keyword: 搜索关键词
+            
+        Returns:
+            记录列表
+        """
+        return RecordModel.search(keyword)
 
     def get_statistics(self) -> Dict:
-        index = self._load_index()
-        records = index.get("records", [])
-
-        total = len(records)
+        """
+        获取统计信息
+        
+        Returns:
+            统计数据
+        """
+        # 获取所有记录
+        all_records = RecordModel.list(page=1, page_size=10000)
+        
+        total = all_records['total']
         status_count = {}
-
-        for record in records:
-            status = record.get("status", "draft")
+        
+        for record in all_records['records']:
+            status = record.get('status', 'draft')
             status_count[status] = status_count.get(status, 0) + 1
-
+        
         return {
             "total": total,
             "by_status": status_count
@@ -224,11 +283,11 @@ class HistoryService:
 
     def scan_and_sync_task_images(self, task_id: str) -> Dict[str, Any]:
         """
-        扫描任务文件夹，同步图片列表
-
+        扫描任务文件夹，同步图片列表（兼容迁移前的数据）
+        
         Args:
             task_id: 任务ID
-
+            
         Returns:
             扫描结果
         """
@@ -250,65 +309,14 @@ class HistoryService:
                 if filename.endswith('.png') or filename.endswith('.jpg') or filename.endswith('.jpeg'):
                     image_files.append(filename)
 
-            # 按文件名排序（数字排序）
-            def get_index(filename):
-                try:
-                    return int(filename.split('.')[0])
-                except:
-                    return 999
+            # 按文件名排序
+            image_files.sort()
 
-            image_files.sort(key=get_index)
-
-            # 查找关联的历史记录
-            index = self._load_index()
-            record_id = None
-            for rec in index.get("records", []):
-                # 通过遍历所有记录，找到 task_id 匹配的记录
-                record_detail = self.get_record(rec["id"])
-                if record_detail and record_detail.get("images", {}).get("task_id") == task_id:
-                    record_id = rec["id"]
-                    break
-
-            if record_id:
-                # 更新历史记录
-                record = self.get_record(record_id)
-                if record:
-                    # 判断状态：所有图片都生成完成才算已完成，其他都是草稿
-                    expected_count = len(record.get("outline", {}).get("pages", []))
-                    actual_count = len(image_files)
-
-                    if actual_count >= expected_count:
-                        status = "completed"
-                    else:
-                        status = "draft"
-
-                    # 更新图片列表和状态
-                    self.update_record(
-                        record_id,
-                        images={
-                            "task_id": task_id,
-                            "generated": image_files
-                        },
-                        status=status,
-                        thumbnail=image_files[0] if image_files else None
-                    )
-
-                    return {
-                        "success": True,
-                        "record_id": record_id,
-                        "task_id": task_id,
-                        "images_count": len(image_files),
-                        "images": image_files,
-                        "status": status
-                    }
-
-            # 没有关联的记录，返回扫描结果
             return {
                 "success": True,
                 "task_id": task_id,
                 "images_count": len(image_files),
-                "images": image_files,
-                "no_record": True
+                "images": image_files
             }
 
         except Exception as e:
@@ -319,8 +327,8 @@ class HistoryService:
 
     def scan_all_tasks(self) -> Dict[str, Any]:
         """
-        扫描所有任务文件夹，同步图片列表
-
+        扫描所有任务文件夹，同步图片列表（兼容迁移前的数据）
+        
         Returns:
             扫描结果统计
         """
@@ -333,7 +341,6 @@ class HistoryService:
         try:
             synced_count = 0
             failed_count = 0
-            orphan_tasks = []  # 没有关联记录的任务
             results = []
 
             # 遍历 history 目录
@@ -352,10 +359,7 @@ class HistoryService:
                 results.append(result)
 
                 if result.get("success"):
-                    if result.get("no_record"):
-                        orphan_tasks.append(task_id)
-                    else:
-                        synced_count += 1
+                    synced_count += 1
                 else:
                     failed_count += 1
 
@@ -364,7 +368,6 @@ class HistoryService:
                 "total_tasks": len(results),
                 "synced": synced_count,
                 "failed": failed_count,
-                "orphan_tasks": orphan_tasks,
                 "results": results
             }
 

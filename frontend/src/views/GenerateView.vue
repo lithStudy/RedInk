@@ -76,7 +76,7 @@
 import { onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useGeneratorStore } from '../stores/generator'
-import { regenerateImage as apiRegenerateImage, getHistory, getTaskImages } from '../api'
+import { regenerateImage as apiRegenerateImage, getHistory } from '../api'
 
 const router = useRouter()
 const route = useRoute()
@@ -154,34 +154,29 @@ onMounted(async () => {
       if (res.success && res.record) {
         const record = res.record
         store.recordId = record.id
-        store.taskId = record.images.task_id
+        store.taskId = record.id  // task_id 就是 record_id
         store.setTopic(record.title)
         store.setOutline(record.outline.raw, record.outline.pages, record.outline.metadata)
         
-        // 扫描图片
-        if (record.images.task_id) {
-          const taskImagesRes = await getTaskImages(record.images.task_id)
-          if (taskImagesRes.success && taskImagesRes.generated_indices) {
-            const generatedSet = new Set(taskImagesRes.generated_indices)
-            store.images = record.outline.pages.map((page) => {
-              if (generatedSet.has(page.index)) {
-                const timestamp = Date.now()
-                return {
-                  index: page.index,
-                  url: `/api/images/${record.images.task_id}/${page.index}.png?t=${timestamp}`,
-                  status: 'done' as const,
-                  retryable: true
-                }
-              }
-              return {
-                index: page.index,
-                url: '',
-                status: 'error' as const,
-                retryable: true
-              }
-            })
+        // 从 record.outline.pages 中直接获取图片信息
+        store.images = record.outline.pages.map((page) => {
+          if (page.image?.filename) {
+            const timestamp = Date.now()
+            const filename = page.image.filename
+            return {
+              index: page.index,
+              url: `/api/images/${record.id}/${filename}?t=${timestamp}`,
+              status: 'done' as const,
+              retryable: true
+            }
           }
-        }
+          return {
+            index: page.index,
+            url: '',
+            status: 'error' as const,
+            retryable: true
+          }
+        })
         
         store.saveToStorage()
       }
@@ -194,46 +189,6 @@ onMounted(async () => {
   if (store.outline.pages.length === 0) {
     router.push('/')
     return
-  }
-
-  // 如果有 taskId，扫描已生成的图片
-  if (store.taskId) {
-    try {
-      const taskImagesRes = await getTaskImages(store.taskId)
-      console.log('📸 扫描任务图片结果:', taskImagesRes)
-      if (taskImagesRes.success && taskImagesRes.generated_indices) {
-        // 更新已生成的图片状态
-        const generatedSet = new Set(taskImagesRes.generated_indices)
-        store.images = store.outline.pages.map((page) => {
-          const pageIndex = page.index
-          const existing = store.images.find(img => img.index === pageIndex)
-          if (generatedSet.has(pageIndex)) {
-            const filename = `${pageIndex}.png`
-            const timestamp = Date.now()
-            const imageUrl = `/api/images/${store.taskId}/${filename}?t=${timestamp}`
-            return {
-              index: pageIndex,
-              url: existing?.url || imageUrl,
-              status: 'done' as const,
-              retryable: true
-            }
-          } else if (existing) {
-            return existing
-          } else {
-            return {
-              index: pageIndex,
-              url: '',
-              status: 'error' as const,
-              retryable: true
-            }
-          }
-        })
-        console.log('✅ 已加载已生成的图片')
-        store.saveToStorage()
-      }
-    } catch (e) {
-      console.error('❌ 扫描已生成图片失败:', e)
-    }
   }
 })
 </script>

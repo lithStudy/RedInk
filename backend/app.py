@@ -5,6 +5,7 @@ from flask import Flask, send_from_directory
 from flask_cors import CORS
 from backend.config import Config
 from backend.routes import register_routes
+from backend.database import get_database
 
 
 def setup_logging():
@@ -39,6 +40,11 @@ def create_app():
     # 设置日志
     logger = setup_logging()
     logger.info("🚀 正在启动 红墨 AI图文生成器...")
+    
+    # 初始化数据库
+    logger.info("📊 正在初始化数据库...")
+    db = get_database()
+    logger.info("✅ 数据库初始化完成")
 
     # 检查是否存在前端构建产物（Docker 环境）
     frontend_dist = Path(__file__).parent.parent / 'frontend' / 'dist'

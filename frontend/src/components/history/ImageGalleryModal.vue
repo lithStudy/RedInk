@@ -56,17 +56,17 @@
       <!-- 图片网格 -->
       <div class="modal-gallery-grid">
         <div
-          v-for="(img, idx) in record.images.generated"
+          v-for="(page, idx) in record.outline.pages"
           :key="idx"
           class="modal-img-item"
         >
           <div
             class="modal-img-preview"
-            v-if="img"
+            v-if="page.image"
             :class="{ 'regenerating': regeneratingImages.has(idx) }"
           >
             <img
-              :src="`/api/images/${record.images.task_id}/${img}`"
+              :src="`/api/images/${record.id}/${page.image.filename}`"
               loading="lazy"
               decoding="async"
             />
@@ -89,9 +89,9 @@
           <div class="img-footer">
             <span>Page {{ idx + 1 }}</span>
             <span
-              v-if="img"
+              v-if="page.image"
               class="download-link"
-              @click="$emit('download', img, idx)"
+              @click="$emit('download', page.image.filename, idx)"
             >
               下载
             </span>
@@ -122,11 +122,15 @@ interface ViewingRecord {
   updated_at: string
   outline: {
     raw: string
-    pages: Array<{ type: string; content: string }>
-  }
-  images: {
-    task_id: string
-    generated: string[]
+    pages: Array<{ 
+      type: string
+      content: string
+      image?: {
+        id: number
+        filename: string
+        thumbnail_filename: string
+      } | null
+    }>
   }
 }
 

@@ -268,8 +268,8 @@ function changePage(p: number) {
  * 重新生成历史记录中的图片
  */
 async function regenerateHistoryImage(index: number) {
-  if (!viewingRecord.value || !viewingRecord.value.images.task_id) {
-    alert('无法重新生成：缺少任务信息')
+  if (!viewingRecord.value || !viewingRecord.value.id) {
+    alert('无法重新生成：缺少记录信息')
     return
   }
 
@@ -285,7 +285,7 @@ async function regenerateHistoryImage(index: number) {
     }
 
     const result = await apiRegenerateImage(
-      viewingRecord.value.images.task_id,
+      viewingRecord.value.id,
       page,
       true,
       context
@@ -293,22 +293,21 @@ async function regenerateHistoryImage(index: number) {
 
     if (result.success && result.image_url) {
       const filename = result.image_url.split('/').pop()
-      viewingRecord.value.images.generated[index] = filename
-
-      // 刷新图片
-      const timestamp = Date.now()
-      const imgElements = document.querySelectorAll(`img[src*="${viewingRecord.value.images.task_id}/${filename}"]`)
-      imgElements.forEach(img => {
-        const baseUrl = (img as HTMLImageElement).src.split('?')[0]
-        ;(img as HTMLImageElement).src = `${baseUrl}?t=${timestamp}`
-      })
-
-      await updateHistory(viewingRecord.value.id, {
-        images: {
-          task_id: viewingRecord.value.images.task_id,
-          generated: viewingRecord.value.images.generated
+      
+      // 刷新图片 - 重新获取完整的 record 数据
+      const res = await getHistory(viewingRecord.value.id)
+      if (res.success) {
+        viewingRecord.value = res.record
+      } else {
+        // 如果重新获取失败，手动更新当前页面的图片信息
+        if (viewingRecord.value.outline.pages[index]) {
+          viewingRecord.value.outline.pages[index].image = {
+            id: 0, // 临时值，实际应该从后端获取
+            filename: filename || '',
+            thumbnail_filename: `thumb_${filename || ''}`
+          }
         }
-      })
+      }
 
       regeneratingImages.value.delete(index)
     } else {
@@ -327,7 +326,7 @@ async function regenerateHistoryImage(index: number) {
 function downloadImage(filename: string, index: number) {
   if (!viewingRecord.value) return
   const link = document.createElement('a')
-  link.href = `/api/images/${viewingRecord.value.images.task_id}/${filename}?thumbnail=false`
+  link.href = `/api/images/${viewingRecord.value.id}/${filename}?thumbnail=false`
   link.download = `page_${index + 1}.png`
   link.click()
 }

@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 from backend.utils.text_client import get_text_chat_client
+from backend.models import RecordModel, ToneModel, OutlineModel, PageModel
 
 logger = logging.getLogger(__name__)
 
@@ -187,10 +188,19 @@ class OutlineService:
 
         return pages, metadata
 
-    def generate_tone(self, topic: str) -> Dict[str, Any]:
-        """生成内容基调"""
+    def generate_tone(self, topic: str, record_id: str) -> Dict[str, Any]:
+        """
+        生成内容基调并保存到数据库
+        
+        Args:
+            topic: 用户输入的主题
+            record_id: 记录 ID
+            
+        Returns:
+            生成结果
+        """
         try:
-            logger.info(f"开始生成基调: topic={topic[:50]}...")
+            logger.info(f"开始生成基调: topic={topic[:50]}..., record_id={record_id}")
             tone_prompt_template = self._load_tone_prompt_template()
             prompt = tone_prompt_template.format(topic=topic)
 
@@ -214,24 +224,13 @@ class OutlineService:
 
             logger.debug(f"基调生成完成，文本长度: {len(tone_text)} 字符")
             
-            # 创建 taskId 和文件夹
-            task_id = f"task_{uuid.uuid4().hex[:8]}"
-            task_dir = os.path.join(self.history_root_dir, task_id)
-            os.makedirs(task_dir, exist_ok=True)
-            logger.info(f"创建任务目录: {task_dir}")
-
-            # 保存基调到文件
-            tone_file = os.path.join(task_dir, "tone.txt")
-            with open(tone_file, "w", encoding="utf-8") as f:
-                f.write(tone_text)
-            logger.info(f"基调已保存到: {tone_file}")
-
-            logger.info("基调生成成功")
+            # 保存基调到数据库
+            ToneModel.create(record_id=record_id, tone_text=tone_text)
+            logger.info(f"基调已保存到数据库: record_id={record_id}")
 
             return {
                 "success": True,
-                "tone": tone_text,
-                "task_id": task_id
+                "tone": tone_text
             }
 
         except Exception as e:
@@ -295,12 +294,24 @@ class OutlineService:
     def generate_outline(
         self,
         topic: str,
+        record_id: str,
         images: Optional[List[bytes]] = None,
-        tone: Optional[str] = None,
-        task_id: Optional[str] = None
+        tone: Optional[str] = None
     ) -> Dict[str, Any]:
+        """
+        生成大纲并保存到数据库
+        
+        Args:
+            topic: 用户输入的主题
+            record_id: 记录 ID
+            images: 参考图片列表
+            tone: 内容基调
+            
+        Returns:
+            生成结果
+        """
         try:
-            logger.info(f"开始生成大纲: topic={topic[:50]}..., images={len(images) if images else 0}, tone={'已提供' if tone else '未提供'}")
+            logger.info(f"开始生成大纲: topic={topic[:50]}..., record_id={record_id}, images={len(images) if images else 0}")
             
             # 格式化提示词（包含基调）
             prompt = self.prompt_template.format(
@@ -334,49 +345,64 @@ class OutlineService:
             logger.debug(f"API 返回文本长度: {len(outline_text)} 字符")
             pages, metadata = self._parse_outline(outline_text)
             logger.info(f"大纲解析完成，共 {len(pages)} 页")
-            logger.info(f"提取元数据: 标题={metadata.get('title', '')[:20]}..., 正文长度={len(metadata.get('content', ''))} 字符, 标签数={len(metadata.get('tags', '').split())}")
+            logger.info(f"提取元数据: 标题={metadata.get('title', '')[:20]}..., 正文长度={len(metadata.get('content', ''))} 字符")
 
-            # 创建 taskId 和文件夹（如果未提供 task_id，则创建新的）
-            if not task_id:
-                task_id = f"task_{uuid.uuid4().hex[:8]}"
-            
-            task_dir = os.path.join(self.history_root_dir, task_id)
-            
-            # 如果提供了 task_id 且目录已存在（说明是重新生成），清除旧的图片文件
-            if task_id and os.path.exists(task_dir):
-                self._clear_task_images(task_dir)
-                logger.info(f"已清除任务目录中的旧图片: {task_dir}")
-            
-            os.makedirs(task_dir, exist_ok=True)
-            logger.info(f"使用任务目录: {task_dir}")
+            # 创建 record_id 文件夹（用于存放图片）
+            record_dir = os.path.join(self.history_root_dir, record_id)
+            os.makedirs(record_dir, exist_ok=True)
+            logger.info(f"创建记录目录: {record_dir}")
 
-            # 如果提供了基调，保存基调到文件
-            if tone:
-                tone_file = os.path.join(task_dir, "tone.txt")
-                with open(tone_file, "w", encoding="utf-8") as f:
-                    f.write(tone)
-                logger.info(f"基调已保存到: {tone_file}")
-
-            # 保存大纲内容到文件夹
-            outline_data = {
-                "topic": topic,
-                "outline": outline_text,
-                "pages": pages,
-                "has_images": images is not None and len(images) > 0,
-                "metadata": metadata  # 保存元数据
-            }
-            outline_file = os.path.join(task_dir, "outline.json")
-            with open(outline_file, "w", encoding="utf-8") as f:
-                json.dump(outline_data, f, ensure_ascii=False, indent=2)
-            logger.info(f"大纲已保存到: {outline_file}")
+            # 获取或创建 tone
+            tone_obj = ToneModel.get_by_record(record_id)
+            if not tone_obj:
+                # 如果没有 tone，需要先创建（如果提供了 tone 参数）
+                if tone:
+                    tone_id = ToneModel.create(record_id=record_id, tone_text=tone)
+                    logger.info(f"基调已保存到数据库: record_id={record_id}, tone_id={tone_id}")
+                else:
+                    # 如果没有提供 tone，创建一个空的 tone
+                    tone_id = ToneModel.create(record_id=record_id, tone_text="")
+                    logger.info(f"创建空基调: record_id={record_id}, tone_id={tone_id}")
+            else:
+                tone_id = tone_obj['id']
+                # 如果提供了新的 tone，更新它
+                if tone and tone != tone_obj['tone_text']:
+                    ToneModel.update(record_id=record_id, tone_text=tone)
+                    logger.info(f"更新基调: record_id={record_id}, tone_id={tone_id}")
+            
+            # 保存大纲到数据库（使用 tone_id）
+            outline_id = OutlineModel.create(
+                tone_id=tone_id,
+                raw_outline=outline_text,
+                metadata_title=metadata.get('title'),
+                metadata_content=metadata.get('content'),
+                metadata_tags=metadata.get('tags')
+            )
+            logger.info(f"大纲已保存到数据库: tone_id={tone_id}, outline_id={outline_id}")
+            
+            # 保存页面到数据库
+            pages_data = [
+                {
+                    'outline_id': outline_id,
+                    'page_index': page['index'],
+                    'page_type': page['type'],
+                    'content': page['content'],
+                    'image_id': None
+                }
+                for page in pages
+            ]
+            PageModel.bulk_create(pages_data)
+            logger.info(f"页面已保存到数据库: {len(pages)} 页")
+            
+            # 更新 record 的 title
+            RecordModel.update(record_id=record_id, title=metadata.get('title'))
 
             return {
                 "success": True,
                 "outline": outline_text,
                 "pages": pages,
                 "has_images": images is not None and len(images) > 0,
-                "task_id": task_id,
-                "metadata": metadata  # 返回元数据
+                "metadata": metadata
             }
 
         except Exception as e:
@@ -437,26 +463,30 @@ class OutlineService:
                 "error": detailed_error
             }
 
-    def get_tone(self, task_id: str) -> Dict[str, Any]:
-        """从任务目录读取基调"""
-        try:
-            task_dir = os.path.join(self.history_root_dir, task_id)
-            tone_file = os.path.join(task_dir, "tone.txt")
+    def get_tone(self, record_id: str) -> Dict[str, Any]:
+        """
+        从数据库读取基调
+        
+        Args:
+            record_id: 记录 ID
             
-            if not os.path.exists(tone_file):
-                logger.warning(f"基调文件不存在: {tone_file}")
+        Returns:
+            基调数据
+        """
+        try:
+            tone = ToneModel.get_by_record(record_id)
+            
+            if not tone:
+                logger.warning(f"基调不存在: record_id={record_id}")
                 return {
                     "success": False,
-                    "error": "基调文件不存在"
+                    "error": "基调不存在"
                 }
             
-            with open(tone_file, "r", encoding="utf-8") as f:
-                tone_text = f.read()
-            
-            logger.info(f"成功读取基调: {tone_file}")
+            logger.info(f"成功读取基调: record_id={record_id}")
             return {
                 "success": True,
-                "tone": tone_text
+                "tone": tone['tone_text']
             }
         except Exception as e:
             error_msg = str(e)
@@ -466,23 +496,20 @@ class OutlineService:
                 "error": f"读取基调失败: {error_msg}"
             }
 
-    def update_tone(self, task_id: str, tone: str) -> Dict[str, Any]:
-        """更新任务目录中的基调"""
+    def update_tone(self, record_id: str, tone: str) -> Dict[str, Any]:
+        """
+        更新数据库中的基调
+        
+        Args:
+            record_id: 记录 ID
+            tone: 基调文本
+            
+        Returns:
+            更新结果
+        """
         try:
-            task_dir = os.path.join(self.history_root_dir, task_id)
-            
-            if not os.path.exists(task_dir):
-                logger.warning(f"任务目录不存在: {task_dir}")
-                return {
-                    "success": False,
-                    "error": "任务目录不存在"
-                }
-            
-            tone_file = os.path.join(task_dir, "tone.txt")
-            with open(tone_file, "w", encoding="utf-8") as f:
-                f.write(tone)
-            
-            logger.info(f"成功更新基调: {tone_file}")
+            ToneModel.update(record_id=record_id, tone_text=tone)
+            logger.info(f"成功更新基调: record_id={record_id}")
             return {
                 "success": True
             }
@@ -494,142 +521,56 @@ class OutlineService:
                 "error": f"更新基调失败: {error_msg}"
             }
 
-    def _clear_task_images(self, task_dir: str):
+    def update_outline(self, record_id: str, pages: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
-        清除任务目录中的图片文件（包括原图和缩略图）
+        更新数据库中的大纲页面
         
         Args:
-            task_dir: 任务目录路径
-        """
-        try:
-            if not os.path.exists(task_dir):
-                return
-            
-            # 遍历目录中的所有文件
-            for filename in os.listdir(task_dir):
-                file_path = os.path.join(task_dir, filename)
-                
-                # 只删除图片文件（包括缩略图），保留其他文件（如 outline.json, tone.txt）
-                if filename.endswith(('.png', '.jpg', '.jpeg')):
-                    try:
-                        os.remove(file_path)
-                        logger.debug(f"已删除图片文件: {filename}")
-                    except Exception as e:
-                        logger.warning(f"删除图片文件失败: {filename}, {e}")
-        except Exception as e:
-            logger.error(f"清除任务图片失败: {task_dir}, {e}")
-
-    def update_outline(self, task_id: str, pages: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """
-        更新任务的大纲（例如删除页面后）
-        
-        该方法会：
-        1. 更新 outline.json 文件
-        2. 重命名现有的图片文件以匹配新的页面索引
-        
-        Args:
-            task_id: 任务ID
+            record_id: 记录 ID
             pages: 新的页面列表
-        
+            
         Returns:
             操作结果字典
         """
         try:
-            task_dir = os.path.join(self.history_root_dir, task_id)
-            
-            if not os.path.exists(task_dir):
-                logger.warning(f"任务目录不存在: {task_dir}")
+            # 获取 outline_id（通过 tone_id）
+            tone = ToneModel.get_by_record(record_id)
+            if not tone:
                 return {
                     "success": False,
-                    "error": "任务目录不存在"
+                    "error": "基调不存在"
                 }
-            
-            outline_file = os.path.join(task_dir, "outline.json")
-            
-            if not os.path.exists(outline_file):
-                logger.warning(f"大纲文件不存在: {outline_file}")
+            outline = OutlineModel.get_by_tone(tone['id'])
+            if not outline:
                 return {
                     "success": False,
-                    "error": "大纲文件不存在"
+                    "error": "大纲不存在"
                 }
+            outline_id = outline['id']
             
-            # 读取现有的大纲文件
-            with open(outline_file, "r", encoding="utf-8") as f:
-                outline_data = json.load(f)
+            # 删除旧的页面
+            PageModel.delete_by_outline(outline_id)
             
-            # 保存旧的页面索引映射（oldIndex -> newIndex）
-            old_pages = outline_data.get("pages", [])
-            old_to_new_index = {}
-            
-            # 创建旧索引集合
-            old_indices = {p["index"] for p in old_pages}
-            new_indices = {p["index"] for p in pages}
-            
-            # 找出被删除的页面索引
-            deleted_indices = old_indices - new_indices
-            
-            # 构建索引映射
-            for new_page in pages:
-                new_index = new_page["index"]
-                # 在旧页面中找到相同内容的页面
-                for old_page in old_pages:
-                    if old_page["content"] == new_page["content"] and old_page["type"] == new_page["type"]:
-                        old_to_new_index[old_page["index"]] = new_index
-                        break
-            
-            logger.info(f"页面索引映射: {old_to_new_index}")
-            logger.info(f"删除的页面索引: {deleted_indices}")
-            
-            # 重命名图片文件
-            # 先将需要重命名的文件移动到临时名称，避免冲突
-            temp_renames = []
-            for old_index, new_index in old_to_new_index.items():
-                if old_index != new_index:
-                    # 处理原图
-                    old_file = os.path.join(task_dir, f"{old_index}.png")
-                    if os.path.exists(old_file):
-                        temp_file = os.path.join(task_dir, f"temp_{old_index}.png")
-                        os.rename(old_file, temp_file)
-                        temp_renames.append((temp_file, os.path.join(task_dir, f"{new_index}.png")))
-                        logger.debug(f"重命名图片: {old_index}.png -> temp_{old_index}.png")
-                    
-                    # 处理缩略图
-                    old_thumb = os.path.join(task_dir, f"thumb_{old_index}.png")
-                    if os.path.exists(old_thumb):
-                        temp_thumb = os.path.join(task_dir, f"temp_thumb_{old_index}.png")
-                        os.rename(old_thumb, temp_thumb)
-                        temp_renames.append((temp_thumb, os.path.join(task_dir, f"thumb_{new_index}.png")))
-                        logger.debug(f"重命名缩略图: thumb_{old_index}.png -> temp_thumb_{old_index}.png")
-            
-            # 执行最终重命名
-            for temp_file, final_file in temp_renames:
-                os.rename(temp_file, final_file)
-                logger.debug(f"完成重命名: {os.path.basename(temp_file)} -> {os.path.basename(final_file)}")
-            
-            # 删除被删除页面的图片文件
-            for deleted_index in deleted_indices:
-                deleted_file = os.path.join(task_dir, f"{deleted_index}.png")
-                if os.path.exists(deleted_file):
-                    os.remove(deleted_file)
-                    logger.info(f"删除图片: {deleted_index}.png")
-                
-                deleted_thumb = os.path.join(task_dir, f"thumb_{deleted_index}.png")
-                if os.path.exists(deleted_thumb):
-                    os.remove(deleted_thumb)
-                    logger.info(f"删除缩略图: thumb_{deleted_index}.png")
-            
-            # 更新大纲数据
-            outline_data["pages"] = pages
+            # 创建新的页面
+            pages_data = [
+                {
+                    'outline_id': outline_id,
+                    'page_index': page['index'],
+                    'page_type': page['type'],
+                    'content': page['content'],
+                    'image_id': page.get('image_id')
+                }
+                for page in pages
+            ]
+            PageModel.bulk_create(pages_data)
             
             # 重新生成 outline 文本
-            outline_text = "\n\n<page>\n\n".join([page["content"] for page in pages])
-            outline_data["outline"] = outline_text
+            outline_text = "\n\n<page>\n\n".join([page['content'] for page in pages])
+            # 通过 outline 获取 tone_id
+            tone_id = outline['tone_id']
+            OutlineModel.update(tone_id=tone_id, raw_outline=outline_text)
             
-            # 保存更新后的大纲文件
-            with open(outline_file, "w", encoding="utf-8") as f:
-                json.dump(outline_data, f, ensure_ascii=False, indent=2)
-            
-            logger.info(f"成功更新大纲: {outline_file}")
+            logger.info(f"成功更新大纲: record_id={record_id}")
             return {
                 "success": True
             }

@@ -152,7 +152,7 @@ const handleRegenerate = async (image: any) => {
       userTopic: store.topic || ''
     }
 
-    const result = await regenerateImage(store.taskId, pageContent, true, context)
+    const result = await regenerateImage(store.recordId, pageContent, true, context)
     if (result.success && result.image_url) {
        const newUrl = result.image_url
        store.updateImage(image.index, newUrl)

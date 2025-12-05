@@ -4,8 +4,8 @@
     <!-- 封面区域 -->
     <div class="card-cover" @click="$emit('preview', record.id)">
       <img
-        v-if="record.thumbnail && record.task_id"
-        :src="`/api/images/${record.task_id}/${record.thumbnail}`"
+        v-if="record.thumbnail"
+        :src="`/api/images/${record.id}/${record.thumbnail}?thumbnail=true`"
         alt="cover"
         loading="lazy"
         decoding="async"
@@ -69,7 +69,6 @@ interface Record {
   page_count: number
   updated_at: string
   thumbnail?: string
-  task_id?: string
 }
 
 // 定义 Props

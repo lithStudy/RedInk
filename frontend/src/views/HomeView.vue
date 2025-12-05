@@ -100,7 +100,7 @@ const uploadedImageFiles = ref<File[]>([])
 // 基调相关状态
 const generatingTone = ref(false)
 const tone = ref<string>('')
-const toneTaskId = ref<string | null>(null)  // 保存基调生成时的 task_id
+const toneRecordId = ref<string | null>(null)  // 保存基调生成时的 record_id
 
 /**
  * 处理图片变化
@@ -127,10 +127,10 @@ async function handleGenerate() {
       return
     }
 
-    // 保存基调内容和 task_id
+    // 保存基调内容和 record_id
     tone.value = toneResult.tone
-    toneTaskId.value = toneResult.task_id || null
-    console.log('✅ 基调生成成功，task_id:', toneTaskId.value)
+    toneRecordId.value = toneResult.record_id || null
+    console.log('✅ 基调生成成功，record_id:', toneRecordId.value)
   } catch (err: any) {
     error.value = err.message || '网络错误，请重试'
   } finally {
@@ -147,8 +147,8 @@ async function handleGenerateOutline() {
     return
   }
 
-  if (!toneTaskId.value) {
-    error.value = '任务ID不存在，无法生成大纲'
+  if (!toneRecordId.value) {
+    error.value = '记录ID不存在，无法生成大纲'
     return
   }
 
@@ -161,7 +161,7 @@ async function handleGenerateOutline() {
       topic.value.trim(),
       imageFiles.length > 0 ? imageFiles : undefined,
       tone.value,
-      toneTaskId.value  // 使用基调生成时的 task_id
+      toneRecordId.value  // 使用基调生成时的 record_id
     )
 
     if (outlineResult.success && outlineResult.pages) {
@@ -170,10 +170,10 @@ async function handleGenerateOutline() {
       store.setTopic(topic.value.trim())
       store.setOutline(outlineResult.outline || '', outlineResult.pages, outlineResult.metadata)
 
-      // 保存 taskId（使用基调生成时的 task_id）
-      if (toneTaskId.value) {
-        store.taskId = toneTaskId.value
-        console.log('已保存 taskId:', toneTaskId.value)
+      // 保存 recordId
+      if (toneRecordId.value) {
+        store.recordId = toneRecordId.value
+        console.log('已保存 recordId:', toneRecordId.value)
       }
       
       // 初始化图片状态（为新大纲创建空的图片槽位）
@@ -198,26 +198,20 @@ async function handleGenerateOutline() {
         store.userImages = []
       }
 
-      // 大纲生成成功后立即创建草稿历史记录
-      try {
-        const historyResult = await createHistory(topic.value.trim(), {
-          raw: outlineResult.outline || '',
-          pages: outlineResult.pages
-        }, toneTaskId.value)  // 传入 task_id
-        if (historyResult.success && historyResult.record_id) {
-          store.recordId = historyResult.record_id
-          console.log('已创建草稿历史记录:', store.recordId)
-        }
-      } catch (e) {
-        console.error('创建草稿历史记录失败:', e)
-        // 即使创建失败也继续跳转，不阻断主流程
+      // 保存 record_id（从大纲生成结果或基调生成结果中获取）
+      if (outlineResult.record_id) {
+        store.recordId = outlineResult.record_id
+        console.log('已保存 recordId:', store.recordId)
+      } else if (toneRecordId.value) {
+        store.recordId = toneRecordId.value
+        console.log('已保存 recordId (from tone):', store.recordId)
       }
 
       // 清理 ComposerInput 的预览
       composerRef.value?.clearPreviews()
       uploadedImageFiles.value = []
       tone.value = ''
-      toneTaskId.value = null
+      toneRecordId.value = null
 
       // 跳转时携带 recordId 参数
       if (store.recordId) {
