@@ -2,7 +2,8 @@
 大纲生成相关 API 路由
 
 包含功能：
-- 生成大纲（支持图片上传）
+- 生成基调
+- 生成大纲（支持图片上传和基调）
 """
 
 import time
@@ -18,6 +19,56 @@ logger = logging.getLogger(__name__)
 def create_outline_blueprint():
     """创建大纲路由蓝图（工厂函数，支持多次调用）"""
     outline_bp = Blueprint('outline', __name__)
+
+    @outline_bp.route('/tone', methods=['POST'])
+    def generate_tone():
+        """
+        生成内容基调
+
+        请求格式：application/json
+        - topic: 主题文本
+
+        返回：
+        - success: 是否成功
+        - tone: 基调文本
+        """
+        start_time = time.time()
+
+        try:
+            data = request.get_json()
+            topic = data.get('topic') if data else None
+
+            log_request('/tone', {'topic': topic})
+
+            # 验证必填参数
+            if not topic:
+                logger.warning("基调生成请求缺少 topic 参数")
+                return jsonify({
+                    "success": False,
+                    "error": "参数错误：topic 不能为空。\n请提供要生成基调的主题内容。"
+                }), 400
+
+            # 调用基调生成服务
+            logger.info(f"🔄 开始生成基调，主题: {topic[:50]}...")
+            outline_service = get_outline_service()
+            result = outline_service.generate_tone(topic)
+
+            # 记录结果
+            elapsed = time.time() - start_time
+            if result["success"]:
+                logger.info(f"✅ 基调生成成功，耗时 {elapsed:.2f}s")
+                return jsonify(result), 200
+            else:
+                logger.error(f"❌ 基调生成失败: {result.get('error', '未知错误')}")
+                return jsonify(result), 500
+
+        except Exception as e:
+            log_error('/tone', e)
+            error_msg = str(e)
+            return jsonify({
+                "success": False,
+                "error": f"基调生成异常。\n错误详情: {error_msg}\n建议：检查后端日志获取更多信息"
+            }), 500
 
     @outline_bp.route('/outline', methods=['POST'])
     def generate_outline():
@@ -42,9 +93,9 @@ def create_outline_blueprint():
 
         try:
             # 解析请求数据
-            topic, images = _parse_outline_request()
+            topic, images, tone, task_id = _parse_outline_request()
 
-            log_request('/outline', {'topic': topic, 'images': images})
+            log_request('/outline', {'topic': topic, 'images': images, 'tone': '已提供' if tone else '未提供', 'task_id': task_id})
 
             # 验证必填参数
             if not topic:
@@ -57,7 +108,7 @@ def create_outline_blueprint():
             # 调用大纲生成服务
             logger.info(f"🔄 开始生成大纲，主题: {topic[:50]}...")
             outline_service = get_outline_service()
-            result = outline_service.generate_outline(topic, images if images else None)
+            result = outline_service.generate_outline(topic, images if images else None, tone, task_id)
 
             # 记录结果
             elapsed = time.time() - start_time
@@ -76,6 +127,126 @@ def create_outline_blueprint():
                 "error": f"大纲生成异常。\n错误详情: {error_msg}\n建议：检查后端日志获取更多信息"
             }), 500
 
+    @outline_bp.route('/tone/<task_id>', methods=['GET'])
+    def get_tone(task_id: str):
+        """
+        获取任务关联的基调
+
+        路径参数：
+        - task_id: 任务ID
+
+        返回：
+        - success: 是否成功
+        - tone: 基调文本
+        """
+        try:
+            logger.info(f"🔄 读取基调，任务ID: {task_id}")
+            outline_service = get_outline_service()
+            result = outline_service.get_tone(task_id)
+
+            if result["success"]:
+                logger.info("✅ 读取基调成功")
+                return jsonify(result), 200
+            else:
+                logger.warning(f"⚠️ 读取基调失败: {result.get('error', '未知错误')}")
+                return jsonify(result), 404
+
+        except Exception as e:
+            log_error('/tone/<task_id>', e)
+            error_msg = str(e)
+            return jsonify({
+                "success": False,
+                "error": f"读取基调异常。\n错误详情: {error_msg}\n建议：检查后端日志获取更多信息"
+            }), 500
+
+    @outline_bp.route('/tone/<task_id>', methods=['PUT'])
+    def update_tone(task_id: str):
+        """
+        更新任务关联的基调
+
+        路径参数：
+        - task_id: 任务ID
+
+        请求体：
+        - tone: 基调文本
+
+        返回：
+        - success: 是否成功
+        """
+        try:
+            data = request.get_json()
+            tone_text = data.get('tone') if data else None
+
+            if not tone_text:
+                logger.warning("更新基调请求缺少 tone 参数")
+                return jsonify({
+                    "success": False,
+                    "error": "参数错误：tone 不能为空。"
+                }), 400
+
+            logger.info(f"🔄 更新基调，任务ID: {task_id}")
+            outline_service = get_outline_service()
+            result = outline_service.update_tone(task_id, tone_text)
+
+            if result["success"]:
+                logger.info("✅ 更新基调成功")
+                return jsonify(result), 200
+            else:
+                logger.warning(f"⚠️ 更新基调失败: {result.get('error', '未知错误')}")
+                return jsonify(result), 400
+
+        except Exception as e:
+            log_error('/tone/<task_id>', e)
+            error_msg = str(e)
+            return jsonify({
+                "success": False,
+                "error": f"更新基调异常。\n错误详情: {error_msg}\n建议：检查后端日志获取更多信息"
+            }), 500
+
+    @outline_bp.route('/outline/<task_id>', methods=['PUT'])
+    def update_outline_route(task_id: str):
+        """
+        更新任务的大纲（例如删除页面后）
+
+        路径参数：
+        - task_id: 任务ID
+
+        请求体：
+        - pages: 新的页面列表
+
+        返回：
+        - success: 是否成功
+        """
+        try:
+            data = request.get_json()
+            pages = data.get('pages') if data else None
+
+            if not pages:
+                logger.warning("更新大纲请求缺少 pages 参数")
+                return jsonify({
+                    "success": False,
+                    "error": "参数错误：pages 不能为空。"
+                }), 400
+
+            logger.info(f"🔄 更新大纲，任务ID: {task_id}, 页面数: {len(pages)}")
+            outline_service = get_outline_service()
+            result = outline_service.update_outline(task_id, pages)
+
+            if result["success"]:
+                logger.info("✅ 更新大纲成功")
+                return jsonify(result), 200
+            else:
+                logger.warning(f"⚠️ 更新大纲失败: {result.get('error', '未知错误')}")
+                return jsonify(result), 400
+
+        except Exception as e:
+            log_error('/outline/<task_id>', e)
+            error_msg = str(e)
+            return jsonify({
+                "success": False,
+                "error": f"更新大纲异常。\n错误详情: {error_msg}\n建议：检查后端日志获取更多信息"
+            }), 500
+
     return outline_bp
 
 
@@ -85,14 +256,19 @@ def _parse_outline_request():
 
     支持两种格式：
     1. multipart/form-data - 用于文件上传
-    2. application/json - 用于 base64 图片
+    2. application/json - 用于 base64 图片和基调
 
     返回：
-        tuple: (topic, images) - 主题和图片列表
+        tuple: (topic, images, tone, task_id) - 主题、图片列表、基调和任务ID
     """
+    tone = None
+    task_id = None
+    
     # 检查是否是 multipart/form-data（带图片文件）
     if request.content_type and 'multipart/form-data' in request.content_type:
         topic = request.form.get('topic')
+        tone = request.form.get('tone')  # 支持从 form 中获取基调
+        task_id = request.form.get('task_id')  # 支持从 form 中获取任务ID
         images = []
 
         # 获取上传的图片文件
@@ -103,11 +279,13 @@ def _parse_outline_request():
                     image_data = file.read()
                     images.append(image_data)
 
-        return topic, images
+        return topic, images, tone, task_id
 
     # JSON 请求（无图片或 base64 图片）
     data = request.get_json()
     topic = data.get('topic')
+    tone = data.get('tone')  # 从 JSON 中获取基调
+    task_id = data.get('task_id')  # 从 JSON 中获取任务ID
     images = []
 
     # 支持 base64 格式的图片
@@ -119,4 +297,4 @@ def _parse_outline_request():
                 img_b64 = img_b64.split(',')[1]
             images.append(base64.b64decode(img_b64))
 
-    return topic, images
+    return topic, images, tone, task_id

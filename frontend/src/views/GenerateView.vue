@@ -4,38 +4,17 @@
       <div>
         <h1 class="page-title">生成结果</h1>
         <p class="page-subtitle">
-          <span v-if="isGenerating">正在生成第 {{ store.progress.current + 1 }} / {{ store.progress.total }} 页</span>
-          <span v-else-if="hasFailedImages">{{ failedCount }} 张图片生成失败，可点击重试</span>
-          <span v-else>全部 {{ store.progress.total }} 张图片生成完成</span>
+          查看已生成的图片
         </p>
       </div>
       <div style="display: flex; gap: 10px;">
-        <button
-          v-if="hasFailedImages && !isGenerating"
-          class="btn btn-primary"
-          @click="retryAllFailed"
-          :disabled="isRetrying"
-        >
-          {{ isRetrying ? '补全中...' : '一键补全失败图片' }}
-        </button>
-        <button class="btn" @click="router.push('/outline')" style="border:1px solid var(--border-color)">
+        <button class="btn" @click="goBackToOutline" style="border:1px solid var(--border-color)">
           返回大纲
         </button>
       </div>
     </div>
 
     <div class="card">
-      <div style="margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center;">
-        <span style="font-weight: 600;">生成进度</span>
-        <span style="color: var(--primary); font-weight: 600;">{{ Math.round(progressPercent) }}%</span>
-      </div>
-      <div class="progress-container">
-        <div class="progress-bar" :style="{ width: progressPercent + '%' }" />
-      </div>
-
-      <div v-if="error" class="error-msg">
-        {{ error }}
-      </div>
 
       <div class="grid-cols-4" style="margin-top: 40px;">
         <div v-for="image in store.images" :key="image.index" class="image-card">
@@ -47,7 +26,6 @@
               <button
                 class="overlay-btn"
                 @click="regenerateImage(image.index)"
-                :disabled="image.status === 'retrying'"
               >
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                   <path d="M23 4v6h-6"></path>
@@ -71,7 +49,6 @@
             <button
               class="retry-btn"
               @click="retrySingleImage(image.index)"
-              :disabled="isRetrying"
             >
               点击重试
             </button>
@@ -96,27 +73,15 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { onMounted } from 'vue'
+import { useRouter, useRoute } from 'vue-router'
 import { useGeneratorStore } from '../stores/generator'
-import { generateImagesPost, regenerateImage as apiRegenerateImage, retryFailedImages as apiRetryFailed, createHistory, updateHistory, getImageUrl } from '../api'
+import { regenerateImage as apiRegenerateImage, getHistory, getTaskImages } from '../api'
 
 const router = useRouter()
+const route = useRoute()
 const store = useGeneratorStore()
 
-const error = ref('')
-const isRetrying = ref(false)
-
-const isGenerating = computed(() => store.progress.status === 'generating')
-
-const progressPercent = computed(() => {
-  if (store.progress.total === 0) return 0
-  return (store.progress.current / store.progress.total) * 100
-})
-
-const hasFailedImages = computed(() => store.images.some(img => img.status === 'error'))
-
-const failedCount = computed(() => store.images.filter(img => img.status === 'error').length)
 
 const getStatusText = (status: string) => {
   const texts: Record<string, string> = {
@@ -163,148 +128,113 @@ function regenerateImage(index: number) {
   retrySingleImage(index)
 }
 
-// 批量重试所有失败的图片
-async function retryAllFailed() {
-  if (!store.taskId) return
-
-  const failedPages = store.getFailedPages()
-  if (failedPages.length === 0) return
-
-  isRetrying.value = true
-
-  // 设置所有失败的图片为重试状态
-  failedPages.forEach(page => {
-    store.setImageRetrying(page.index)
-  })
-
-  try {
-    await apiRetryFailed(
-      store.taskId,
-      failedPages,
-      // onProgress
-      () => {},
-      // onComplete
-      (event) => {
-        if (event.image_url) {
-          store.updateImage(event.index, event.image_url)
-        }
-      },
-      // onError
-      (event) => {
-        store.updateProgress(event.index, 'error', undefined, event.message)
-      },
-      // onFinish
-      () => {
-        isRetrying.value = false
-      },
-      // onStreamError
-      (err) => {
-        console.error('重试失败:', err)
-        isRetrying.value = false
-        error.value = '重试失败: ' + err.message
-      }
-    )
-  } catch (e) {
-    isRetrying.value = false
-    error.value = '重试失败: ' + String(e)
+// 返回大纲页
+function goBackToOutline() {
+  if (store.recordId) {
+    router.push(`/outline?recordId=${store.recordId}`)
+  } else {
+    router.push('/outline')
   }
 }
 
+
 onMounted(async () => {
+  const recordId = route.query.recordId as string
+  
+  // 如果有 recordId，从后端加载数据
+  if (recordId && (!store.recordId || store.recordId !== recordId)) {
+    console.log('🔄 从后端加载任务数据:', recordId)
+    
+    // 尝试从缓存快速恢复
+    store.loadFromCache(recordId)
+    
+    // 从后端加载最新数据
+    try {
+      const res = await getHistory(recordId)
+      if (res.success && res.record) {
+        const record = res.record
+        store.recordId = record.id
+        store.taskId = record.images.task_id
+        store.setTopic(record.title)
+        store.setOutline(record.outline.raw, record.outline.pages, record.outline.metadata)
+        
+        // 扫描图片
+        if (record.images.task_id) {
+          const taskImagesRes = await getTaskImages(record.images.task_id)
+          if (taskImagesRes.success && taskImagesRes.generated_indices) {
+            const generatedSet = new Set(taskImagesRes.generated_indices)
+            store.images = record.outline.pages.map((page) => {
+              if (generatedSet.has(page.index)) {
+                const timestamp = Date.now()
+                return {
+                  index: page.index,
+                  url: `/api/images/${record.images.task_id}/${page.index}.png?t=${timestamp}`,
+                  status: 'done' as const,
+                  retryable: true
+                }
+              }
+              return {
+                index: page.index,
+                url: '',
+                status: 'error' as const,
+                retryable: true
+              }
+            })
+          }
+        }
+        
+        store.saveToStorage()
+      }
+    } catch (e) {
+      console.error('❌ 加载数据失败:', e)
+    }
+  }
+  
+  // 检查是否有数据
   if (store.outline.pages.length === 0) {
     router.push('/')
     return
   }
 
-  // 创建历史记录（如果还没有）
-  if (!store.recordId) {
+  // 如果有 taskId，扫描已生成的图片
+  if (store.taskId) {
     try {
-      const result = await createHistory(store.topic, {
-        raw: store.outline.raw,
-        pages: store.outline.pages
-      })
-      if (result.success && result.record_id) {
-        store.recordId = result.record_id
-        console.log('创建历史记录:', store.recordId)
+      const taskImagesRes = await getTaskImages(store.taskId)
+      console.log('📸 扫描任务图片结果:', taskImagesRes)
+      if (taskImagesRes.success && taskImagesRes.generated_indices) {
+        // 更新已生成的图片状态
+        const generatedSet = new Set(taskImagesRes.generated_indices)
+        store.images = store.outline.pages.map((page) => {
+          const pageIndex = page.index
+          const existing = store.images.find(img => img.index === pageIndex)
+          if (generatedSet.has(pageIndex)) {
+            const filename = `${pageIndex}.png`
+            const timestamp = Date.now()
+            const imageUrl = `/api/images/${store.taskId}/${filename}?t=${timestamp}`
+            return {
+              index: pageIndex,
+              url: existing?.url || imageUrl,
+              status: 'done' as const,
+              retryable: true
+            }
+          } else if (existing) {
+            return existing
+          } else {
+            return {
+              index: pageIndex,
+              url: '',
+              status: 'error' as const,
+              retryable: true
+            }
+          }
+        })
+        console.log('✅ 已加载已生成的图片')
+        store.saveToStorage()
       }
     } catch (e) {
-      console.error('创建历史记录失败:', e)
+      console.error('❌ 扫描已生成图片失败:', e)
     }
   }
-
-  store.startGeneration()
-
-  generateImagesPost(
-    store.outline.pages,
-    null,
-    store.outline.raw,  // 传入完整大纲文本
-    // onProgress
-    (event) => {
-      console.log('Progress:', event)
-    },
-    // onComplete
-    (event) => {
-      console.log('Complete:', event)
-      if (event.image_url) {
-        store.updateProgress(event.index, 'done', event.image_url)
-      }
-    },
-    // onError
-    (event) => {
-      console.error('Error:', event)
-      store.updateProgress(event.index, 'error', undefined, event.message)
-    },
-    // onFinish
-    async (event) => {
-      console.log('Finish:', event)
-      store.finishGeneration(event.task_id)
-
-      // 更新历史记录
-      if (store.recordId) {
-        try {
-          // 收集所有生成的图片文件名
-          const generatedImages = event.images.filter(img => img !== null)
-
-          // 确定状态
-          let status = 'completed'
-          if (hasFailedImages.value) {
-            status = generatedImages.length > 0 ? 'partial' : 'draft'
-          }
-
-          // 获取封面图作为缩略图（只保存文件名，不是完整URL）
-          const thumbnail = generatedImages.length > 0 ? generatedImages[0] : null
-
-          await updateHistory(store.recordId, {
-            images: {
-              task_id: event.task_id,
-              generated: generatedImages
-            },
-            status: status,
-            thumbnail: thumbnail
-          })
-          console.log('历史记录已更新')
-        } catch (e) {
-          console.error('更新历史记录失败:', e)
-        }
-      }
-
-      // 如果没有失败的，跳转到结果页
-      if (!hasFailedImages.value) {
-        setTimeout(() => {
-          router.push('/result')
-        }, 1000)
-      }
-    },
-    // onStreamError
-    (err) => {
-      console.error('Stream Error:', err)
-      error.value = '生成失败: ' + err.message
-    },
-    // userImages - 用户上传的参考图片
-    store.userImages.length > 0 ? store.userImages : undefined,
-    // userTopic - 用户原始输入
-    store.topic
-  )
 })
 </script>
 
@@ -469,5 +399,20 @@ onMounted(async () => {
   to {
     transform: rotate(360deg);
   }
+}
+
+.btn-danger {
+  background: #ff4d4f;
+  color: white;
+  border: none;
+}
+
+.btn-danger:hover {
+  background: #ff7875;
+}
+
+.btn-danger:disabled {
+  background: #ffccc7;
+  cursor: not-allowed;
 }
 </style>

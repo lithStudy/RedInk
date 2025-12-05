@@ -56,11 +56,4 @@
 
 <script setup lang="ts">
 import { RouterView, RouterLink } from 'vue-router'
-import { onMounted } from 'vue'
-import { setupAutoSave } from './stores/generator'
-
-// 启用自动保存到 localStorage
-onMounted(() => {
-  setupAutoSave()
-})
 </script>

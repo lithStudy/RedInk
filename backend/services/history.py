@@ -55,7 +55,7 @@ class HistoryService:
                 "task_id": task_id,
                 "generated": []
             },
-            "status": "draft",  # draft/generating/completed/partial
+            "status": "draft",  # draft/completed
             "thumbnail": None
         }
 
@@ -273,16 +273,14 @@ class HistoryService:
                 # 更新历史记录
                 record = self.get_record(record_id)
                 if record:
-                    # 判断状态
+                    # 判断状态：所有图片都生成完成才算已完成，其他都是草稿
                     expected_count = len(record.get("outline", {}).get("pages", []))
                     actual_count = len(image_files)
 
-                    if actual_count == 0:
-                        status = "draft"
-                    elif actual_count >= expected_count:
+                    if actual_count >= expected_count:
                         status = "completed"
                     else:
-                        status = "partial"
+                        status = "draft"
 
                     # 更新图片列表和状态
                     self.update_record(

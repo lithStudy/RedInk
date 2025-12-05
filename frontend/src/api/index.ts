@@ -8,11 +8,19 @@ export interface Page {
   content: string
 }
 
+export interface OutlineMetadata {
+  title: string
+  content: string
+  tags: string
+}
+
 export interface OutlineResponse {
   success: boolean
   outline?: string
   pages?: Page[]
+  task_id?: string
   error?: string
+  metadata?: OutlineMetadata
 }
 
 export interface ProgressEvent {
@@ -30,15 +38,55 @@ export interface FinishEvent {
   images: string[]
 }
 
-// 生成大纲（支持图片上传）
+export interface ToneResponse {
+  success: boolean
+  tone?: string
+  error?: string
+}
+
+// 生成基调
+export async function generateTone(topic: string): Promise<ToneResponse & { task_id?: string }> {
+  const response = await axios.post<ToneResponse & { task_id?: string }>(`${API_BASE_URL}/tone`, {
+    topic
+  })
+  return response.data
+}
+
+// 获取基调
+export async function getTone(taskId: string): Promise<ToneResponse> {
+  const response = await axios.get<ToneResponse>(`${API_BASE_URL}/tone/${taskId}`)
+  return response.data
+}
+
+// 更新基调
+export async function updateTone(taskId: string, tone: string): Promise<{ success: boolean; error?: string }> {
+  const response = await axios.put(`${API_BASE_URL}/tone/${taskId}`, { tone })
+  return response.data
+}
+
+// 更新大纲（例如删除页面后）
+export async function updateOutline(taskId: string, pages: Page[]): Promise<{ success: boolean; error?: string }> {
+  const response = await axios.put(`${API_BASE_URL}/outline/${taskId}`, { pages })
+  return response.data
+}
+
+// 生成大纲（支持图片上传和基调）
 export async function generateOutline(
   topic: string,
-  images?: File[]
+  images?: File[],
+  tone?: string,
+  taskId?: string
 ): Promise<OutlineResponse & { has_images?: boolean }> {
   // 如果有图片，使用 FormData
   if (images && images.length > 0) {
     const formData = new FormData()
     formData.append('topic', topic)
+    if (tone) {
+      formData.append('tone', tone)
+    }
+    if (taskId) {
+      formData.append('task_id', taskId)
+    }
     images.forEach((file) => {
       formData.append('images', file)
     })
@@ -57,7 +105,9 @@ export async function generateOutline(
 
   // 无图片，使用 JSON
   const response = await axios.post<OutlineResponse>(`${API_BASE_URL}/outline`, {
-    topic
+    topic,
+    tone,
+    task_id: taskId
   })
   return response.data
 }
@@ -77,14 +127,16 @@ export async function regenerateImage(
   context?: {
     fullOutline?: string
     userTopic?: string
-  }
+  },
+  referenceMode?: 'custom' | 'cover' | 'previous'
 ): Promise<{ success: boolean; index: number; image_url?: string; error?: string }> {
   const response = await axios.post(`${API_BASE_URL}/regenerate`, {
     task_id: taskId,
     page,
     use_reference: useReference,
     full_outline: context?.fullOutline,
-    user_topic: context?.userTopic
+    user_topic: context?.userTopic,
+    reference_mode: referenceMode
   })
   return response.data
 }
@@ -189,6 +241,7 @@ export interface HistoryDetail {
   outline: {
     raw: string
     pages: Page[]
+    metadata?: OutlineMetadata
   }
   images: {
     task_id: string | null
@@ -246,7 +299,7 @@ export async function getHistory(recordId: string): Promise<{
 export async function updateHistory(
   recordId: string,
   data: {
-    outline?: { raw: string; pages: Page[] }
+    outline?: { raw: string; pages: Page[]; metadata?: OutlineMetadata }
     images?: { task_id: string | null; generated: string[] }
     status?: string
     thumbnail?: string
@@ -297,7 +350,9 @@ export async function generateImagesPost(
   onFinish: (event: FinishEvent) => void,
   onStreamError: (error: Error) => void,
   userImages?: File[],
-  userTopic?: string
+  userTopic?: string,
+  onStopped?: (event: { task_id: string; message: string; completed: number; pending: number }) => void,
+  referenceMode?: 'custom' | 'cover' | 'previous'
 ) {
   try {
     // 将用户图片转换为 base64
@@ -325,7 +380,8 @@ export async function generateImagesPost(
         task_id: taskId,
         full_outline: fullOutline,
         user_images: userImagesBase64.length > 0 ? userImagesBase64 : undefined,
-        user_topic: userTopic || ''
+        user_topic: userTopic || '',
+        reference_mode: referenceMode
       })
     })
 
@@ -375,6 +431,9 @@ export async function generateImagesPost(
             case 'finish':
               onFinish(data)
               break
+            case 'stopped':
+              if (onStopped) onStopped(data)
+              break
           }
         } catch (e) {
           console.error('解析 SSE 数据失败:', e)
@@ -384,6 +443,120 @@ export async function generateImagesPost(
   } catch (error) {
     onStreamError(error as Error)
   }
+}
+
+// 停止图片生成
+export async function stopGeneration(taskId: string): Promise<{
+  success: boolean
+  message?: string
+  error?: string
+}> {
+  const response = await axios.post(`${API_BASE_URL}/stop-generation`, {
+    task_id: taskId
+  })
+  return response.data
+}
+
+// 继续图片生成（SSE）- 自动扫描未完成的页面
+export async function continueGeneration(
+  taskId: string,
+  onProgress: (event: ProgressEvent) => void,
+  onComplete: (event: ProgressEvent) => void,
+  onError: (event: ProgressEvent) => void,
+  onFinish: (event: FinishEvent) => void,
+  onStopped: (event: { task_id: string; message: string; completed: number; pending: number }) => void,
+  onStreamError: (error: Error) => void
+) {
+  try {
+    const response = await fetch(`${API_BASE_URL}/continue-generation`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        task_id: taskId
+      })
+    })
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`)
+    }
+
+    const reader = response.body?.getReader()
+    if (!reader) {
+      throw new Error('无法读取响应流')
+    }
+
+    const decoder = new TextDecoder()
+    let buffer = ''
+
+    while (true) {
+      const { done, value } = await reader.read()
+
+      if (done) break
+
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n\n')
+      buffer = lines.pop() || ''
+
+      for (const line of lines) {
+        if (!line.trim()) continue
+
+        const [eventLine, dataLine] = line.split('\n')
+        if (!eventLine || !dataLine) continue
+
+        const eventType = eventLine.replace('event: ', '').trim()
+        const eventData = dataLine.replace('data: ', '').trim()
+
+        try {
+          const data = JSON.parse(eventData)
+
+          switch (eventType) {
+            case 'continue_start':
+              onProgress({ index: -1, status: 'generating', message: data.message })
+              break
+            case 'progress':
+              onProgress(data)
+              break
+            case 'complete':
+              onComplete(data)
+              break
+            case 'error':
+              onError(data)
+              break
+            case 'stopped':
+              onStopped(data)
+              break
+            case 'finish':
+              onFinish(data)
+              break
+          }
+        } catch (e) {
+          console.error('解析 SSE 数据失败:', e)
+        }
+      }
+    }
+  } catch (error) {
+    onStreamError(error as Error)
+  }
+}
+
+// 获取任务文件夹中的图片列表（扫描文件系统）
+export async function getTaskImages(taskId: string): Promise<{
+  success: boolean
+  images?: string[]
+  generated_indices?: number[]
+  outline?: {
+    raw?: string
+    pages: Page[]
+    topic?: string
+    total: number
+    metadata?: OutlineMetadata
+  }
+  error?: string
+}> {
+  const response = await axios.get(`${API_BASE_URL}/task/${taskId}/images`)
+  return response.data
 }
 
 // 扫描所有任务并同步图片列表

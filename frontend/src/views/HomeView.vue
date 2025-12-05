@@ -21,11 +21,41 @@
       <ComposerInput
         ref="composerRef"
         v-model="topic"
-        :loading="loading"
+        :loading="generatingTone"
         @generate="handleGenerate"
         @imagesChange="handleImagesChange"
       />
     </div>
+
+    <!-- 基调展示区域 -->
+    <div v-if="tone" class="tone-section" style="max-width: 1100px; margin: 0 auto 40px auto;">
+      <div class="card tone-card">
+        <div class="tone-header">
+          <h3 class="tone-title">内容基调</h3>
+          <button 
+            class="btn btn-primary btn-generate" 
+            @click="handleGenerateOutline"
+            :disabled="loading || !tone.trim()"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 6px;">
+              <path d="M20.24 12.24a6 6 0 0 0-8.49-8.49L5 10.5V19h8.5z"></path>
+              <line x1="16" y1="8" x2="2" y2="22"></line>
+              <line x1="17.5" y1="15" x2="9" y2="15"></line>
+            </svg>
+            {{ loading ? '生成中...' : '生成大纲' }}
+          </button>
+        </div>
+        <div class="tone-content">
+          <textarea
+            v-model="tone"
+            class="tone-textarea"
+            placeholder="编辑内容基调..."
+            rows="15"
+          ></textarea>
+        </div>
+      </div>
+    </div>
+
 
     <!-- 版权信息 -->
     <div class="page-footer">
@@ -49,7 +79,7 @@
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useGeneratorStore } from '../stores/generator'
-import { generateOutline } from '../api'
+import { generateOutline, generateTone, createHistory } from '../api'
 
 // 引入组件
 import ShowcaseBackground from '../components/home/ShowcaseBackground.vue'
@@ -67,6 +97,11 @@ const composerRef = ref<InstanceType<typeof ComposerInput> | null>(null)
 // 上传的图片文件
 const uploadedImageFiles = ref<File[]>([])
 
+// 基调相关状态
+const generatingTone = ref(false)
+const tone = ref<string>('')
+const toneTaskId = ref<string | null>(null)  // 保存基调生成时的 task_id
+
 /**
  * 处理图片变化
  */
@@ -75,26 +110,86 @@ function handleImagesChange(images: File[]) {
 }
 
 /**
- * 生成大纲
+ * 生成基调
  */
 async function handleGenerate() {
   if (!topic.value.trim()) return
+
+  generatingTone.value = true
+  error.value = ''
+
+  try {
+    // 生成基调
+    const toneResult = await generateTone(topic.value.trim())
+
+    if (!toneResult.success || !toneResult.tone) {
+      error.value = toneResult.error || '生成基调失败'
+      return
+    }
+
+    // 保存基调内容和 task_id
+    tone.value = toneResult.tone
+    toneTaskId.value = toneResult.task_id || null
+    console.log('✅ 基调生成成功，task_id:', toneTaskId.value)
+  } catch (err: any) {
+    error.value = err.message || '网络错误，请重试'
+  } finally {
+    generatingTone.value = false
+  }
+}
+
+/**
+ * 根据基调生成大纲
+ */
+async function handleGenerateOutline() {
+  if (!tone.value.trim()) {
+    error.value = '基调内容不能为空'
+    return
+  }
+
+  if (!toneTaskId.value) {
+    error.value = '任务ID不存在，无法生成大纲'
+    return
+  }
 
   loading.value = true
   error.value = ''
 
   try {
     const imageFiles = uploadedImageFiles.value
-
-    const result = await generateOutline(
+    const outlineResult = await generateOutline(
       topic.value.trim(),
-      imageFiles.length > 0 ? imageFiles : undefined
+      imageFiles.length > 0 ? imageFiles : undefined,
+      tone.value,
+      toneTaskId.value  // 使用基调生成时的 task_id
     )
 
-    if (result.success && result.pages) {
+    if (outlineResult.success && outlineResult.pages) {
+      console.log('✅ 大纲生成成功，结果:', outlineResult)
+      console.log('📱 元数据:', outlineResult.metadata)
       store.setTopic(topic.value.trim())
-      store.setOutline(result.outline || '', result.pages)
-      store.recordId = null
+      store.setOutline(outlineResult.outline || '', outlineResult.pages, outlineResult.metadata)
+
+      // 保存 taskId（使用基调生成时的 task_id）
+      if (toneTaskId.value) {
+        store.taskId = toneTaskId.value
+        console.log('已保存 taskId:', toneTaskId.value)
+      }
+      
+      // 初始化图片状态（为新大纲创建空的图片槽位）
+      store.images = outlineResult.pages.map((page) => ({
+        index: page.index,
+        url: '',
+        status: 'error' as const,
+        retryable: true
+      }))
+
+      // 重置进度状态
+      store.progress = {
+        current: 0,
+        total: outlineResult.pages.length,
+        status: 'idle'
+      }
 
       // 保存用户上传的图片到 store
       if (imageFiles.length > 0) {
@@ -103,13 +198,36 @@ async function handleGenerate() {
         store.userImages = []
       }
 
+      // 大纲生成成功后立即创建草稿历史记录
+      try {
+        const historyResult = await createHistory(topic.value.trim(), {
+          raw: outlineResult.outline || '',
+          pages: outlineResult.pages
+        }, toneTaskId.value)  // 传入 task_id
+        if (historyResult.success && historyResult.record_id) {
+          store.recordId = historyResult.record_id
+          console.log('已创建草稿历史记录:', store.recordId)
+        }
+      } catch (e) {
+        console.error('创建草稿历史记录失败:', e)
+        // 即使创建失败也继续跳转，不阻断主流程
+      }
+
       // 清理 ComposerInput 的预览
       composerRef.value?.clearPreviews()
       uploadedImageFiles.value = []
+      tone.value = ''
+      toneTaskId.value = null
 
-      router.push('/outline')
+      // 跳转时携带 recordId 参数
+      if (store.recordId) {
+        router.push(`/outline?recordId=${store.recordId}`)
+      } else {
+        // 没有 recordId，使用 draft 模式（OutlineView 会创建）
+        router.push('/outline')
+      }
     } else {
-      error.value = result.error || '生成大纲失败'
+      error.value = outlineResult.error || '生成大纲失败'
     }
   } catch (err: any) {
     error.value = err.message || '网络错误，请重试'
@@ -235,5 +353,85 @@ async function handleGenerate() {
 @keyframes slideUp {
   from { opacity: 0; transform: translateY(20px); }
   to { opacity: 1; transform: translateY(0); }
+}
+
+/* 基调展示区域 */
+.tone-section {
+  animation: fadeIn 0.6s ease-out;
+}
+
+.tone-card {
+  background: white;
+  border-radius: 16px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.06);
+  overflow: hidden;
+}
+
+.tone-header {
+  padding: 20px 24px;
+  border-bottom: 1px solid var(--border-color);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: linear-gradient(135deg, rgba(255, 36, 66, 0.05) 0%, rgba(255, 36, 66, 0.02) 100%);
+}
+
+.tone-title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+.tone-content {
+  padding: 24px;
+}
+
+.tone-textarea {
+  width: 100%;
+  min-height: 300px;
+  padding: 16px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  font-size: 13px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;
+  line-height: 1.8;
+  resize: vertical;
+  color: var(--text-main);
+  background: var(--bg-secondary);
+}
+
+.tone-textarea:focus {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(255, 36, 66, 0.1);
+}
+
+.btn-generate {
+  padding: 10px 20px;
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  border-radius: 8px;
+  border: none;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.btn-primary {
+  background: var(--primary);
+  color: white;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: #e62e3d;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(255, 36, 66, 0.3);
+}
+
+.btn-primary:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
 }
 </style>

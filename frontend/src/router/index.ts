@@ -18,16 +18,19 @@ const router = createRouter({
       path: '/outline',
       name: 'outline',
       component: OutlineView
+      // 支持 query 参数: ?recordId=xxx 或 ?taskId=xxx
     },
     {
       path: '/generate',
       name: 'generate',
       component: GenerateView
+      // 支持 query 参数: ?recordId=xxx
     },
     {
       path: '/result',
       name: 'result',
       component: ResultView
+      // 支持 query 参数: ?recordId=xxx
     },
     {
       path: '/history',

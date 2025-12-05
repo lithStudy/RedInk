@@ -379,8 +379,12 @@ def create_history_blueprint():
                     "error": f"任务目录不存在：{task_id}"
                 }), 404
 
+            # 获取页面顺序（从 outline.pages）
+            outline = record.get('outline', {})
+            pages = outline.get('pages', [])
+            
             # 创建内存中的 ZIP 文件
-            zip_buffer = _create_images_zip(task_dir)
+            zip_buffer = _create_images_zip(task_dir, pages)
 
             # 生成安全的下载文件名
             title = record.get('title', 'images')
@@ -404,12 +408,13 @@ def create_history_blueprint():
     return history_bp
 
 
-def _create_images_zip(task_dir: str) -> io.BytesIO:
+def _create_images_zip(task_dir: str, pages: list = None) -> io.BytesIO:
     """
     创建包含所有图片的 ZIP 文件
 
     Args:
         task_dir: 任务目录路径
+        pages: 页面顺序列表（包含 index 字段），用于按照当前显示顺序命名文件
 
     Returns:
         io.BytesIO: 内存中的 ZIP 文件
@@ -417,23 +422,35 @@ def _create_images_zip(task_dir: str) -> io.BytesIO:
     memory_file = io.BytesIO()
 
     with zipfile.ZipFile(memory_file, 'w', zipfile.ZIP_DEFLATED) as zf:
-        # 遍历任务目录中的所有图片（排除缩略图）
-        for filename in os.listdir(task_dir):
-            # 跳过缩略图文件
-            if filename.startswith('thumb_'):
-                continue
-
-            if filename.endswith(('.png', '.jpg', '.jpeg')):
+        if pages:
+            # 如果提供了页面顺序，按照页面顺序打包
+            for display_index, page in enumerate(pages, start=1):
+                page_index = page.get('index')
+                filename = f"{page_index}.png"
                 file_path = os.path.join(task_dir, filename)
+                
+                # 检查文件是否存在
+                if os.path.exists(file_path):
+                    archive_name = f"page_{display_index}.png"
+                    zf.write(file_path, archive_name)
+        else:
+            # 如果没有提供页面顺序，使用原有逻辑（兼容旧代码）
+            for filename in os.listdir(task_dir):
+                # 跳过缩略图文件
+                if filename.startswith('thumb_'):
+                    continue
 
-                # 生成归档文件名（page_N.png 格式）
-                try:
-                    index = int(filename.split('.')[0])
-                    archive_name = f"page_{index + 1}.png"
-                except ValueError:
-                    archive_name = filename
+                if filename.endswith(('.png', '.jpg', '.jpeg')):
+                    file_path = os.path.join(task_dir, filename)
 
-                zf.write(file_path, archive_name)
+                    # 生成归档文件名（page_N.png 格式）
+                    try:
+                        index = int(filename.split('.')[0])
+                        archive_name = f"page_{index + 1}.png"
+                    except ValueError:
+                        archive_name = filename
+
+                    zf.write(file_path, archive_name)
 
     # 将指针移到开始位置
     memory_file.seek(0)

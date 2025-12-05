@@ -131,7 +131,8 @@ import {
   type HistoryRecord,
   regenerateImage as apiRegenerateImage,
   updateHistory,
-  scanAllTasks
+  scanAllTasks,
+  getTaskImages
 } from '../api'
 import { useGeneratorStore } from '../stores/generator'
 
@@ -220,27 +221,12 @@ async function handleSearch() {
 
 /**
  * 加载记录并跳转到编辑页
+ * 改为直接跳转，由 OutlineView 根据 URL 参数加载数据
  */
 async function loadRecord(id: string) {
-  const res = await getHistory(id)
-  if (res.success && res.record) {
-    store.setTopic(res.record.title)
-    store.setOutline(res.record.outline.raw, res.record.outline.pages)
-    store.recordId = res.record.id
-    if (res.record.images.generated.length > 0) {
-      store.taskId = res.record.images.task_id
-      store.images = res.record.outline.pages.map((page, idx) => {
-        const filename = res.record!.images.generated[idx]
-        return {
-          index: idx,
-          url: filename ? `/api/images/${res.record!.images.task_id}/${filename}` : '',
-          status: filename ? 'done' : 'error',
-          retryable: !filename
-        }
-      })
-    }
-    router.push('/outline')
-  }
+  // 直接跳转到 outline 页，携带 recordId 参数
+  // OutlineView 会根据 recordId 从后端加载完整数据
+  router.push(`/outline?recordId=${id}`)
 }
 
 /**
