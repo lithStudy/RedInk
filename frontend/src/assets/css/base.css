@@ -34,6 +34,13 @@ body {
   flex-direction: column;
   z-index: 100;
   transition: all 0.3s ease;
+  overflow-x: hidden;
+}
+
+/* 收起状态 */
+.layout-sidebar.collapsed {
+  width: 80px;
+  padding: 32px 16px;
 }
 
 .layout-main {
@@ -44,6 +51,11 @@ body {
   background: linear-gradient(135deg, #FAFAFA 0%, #F4F5F7 100%);
   display: flex;
   flex-direction: column;
+  transition: margin-left 0.3s ease;
+}
+
+.layout-main.sidebar-collapsed {
+  margin-left: 80px;
 }
 
 /* Logo 区域 */
@@ -51,8 +63,14 @@ body {
   display: flex;
   align-items: center;
   gap: 12px;
-  margin-bottom: 48px;
+  margin-bottom: 24px;
   padding-left: 8px;
+  transition: all 0.3s ease;
+}
+
+.layout-sidebar.collapsed .logo-area {
+  justify-content: center;
+  padding-left: 0;
 }
 
 .logo-icon {
@@ -61,6 +79,7 @@ body {
   border-radius: 12px;
   object-fit: cover;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  flex-shrink: 0;
 }
 
 .logo-text {
@@ -68,6 +87,48 @@ body {
   font-weight: 700;
   color: var(--text-main);
   letter-spacing: -0.5px;
+  white-space: nowrap;
+  transition: opacity 0.3s ease;
+}
+
+/* 收起/展开按钮 */
+.sidebar-toggle {
+  position: absolute;
+  top: 24px;
+  right: 12px;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-body);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  color: var(--text-sub);
+  transition: all 0.2s ease;
+  z-index: 10;
+}
+
+.sidebar-toggle:hover {
+  background: var(--primary-light);
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.layout-sidebar.collapsed .desktop-toggle {
+  right: 50%;
+  transform: translateX(50%);
+}
+
+/* 小屏模式下的切换按钮（固定在左上角） */
+.sidebar-toggle.mobile-toggle {
+  position: fixed;
+  top: 16px;
+  left: 16px;
+  z-index: 102;
+  background: white;
+  box-shadow: var(--shadow-md);
 }
 
 /* 导航菜单 */
@@ -75,6 +136,7 @@ body {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  flex: 1;
 }
 
 .nav-item {
@@ -88,6 +150,23 @@ body {
   font-weight: 500;
   transition: all 0.2s ease;
   font-size: 15px;
+  white-space: nowrap;
+  position: relative;
+}
+
+.layout-sidebar.collapsed .nav-item {
+  padding: 14px;
+  justify-content: center;
+}
+
+.nav-item svg {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+}
+
+.nav-item span {
+  transition: opacity 0.3s ease;
 }
 
 .nav-item:hover {
@@ -98,6 +177,56 @@ body {
 .nav-item.active {
   background: var(--primary-light);
   color: var(--primary);
+}
+
+/* 侧边栏底部用户信息 */
+.sidebar-footer {
+  margin-top: auto;
+  padding-top: 20px;
+  border-top: 1px solid var(--border-color);
+}
+
+.user-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.user-avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+
+.user-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+.user-id {
+  font-size: 12px;
+  color: var(--text-sub);
+}
+
+/* 遮罩层（小屏模式） */
+.sidebar-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 99;
+  animation: fadeIn 0.3s ease;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }
 
 /* 通用容器 */
@@ -190,4 +319,39 @@ body {
 .footer-license a:hover {
   color: var(--primary);
   text-decoration: underline;
+}
+
+/* 响应式设计 - 小屏模式 */
+@media (max-width: 768px) {
+  .layout-sidebar {
+    transform: translateX(-100%);
+    width: var(--sidebar-width);
+    padding: 32px 24px;
+  }
+
+  /* 小屏模式下，!collapsed 表示显示 */
+  .layout-sidebar:not(.collapsed) {
+    transform: translateX(0);
+    box-shadow: 2px 0 8px rgba(0, 0, 0, 0.1);
+  }
+
+  .layout-main {
+    margin-left: 0;
+    padding: 16px;
+  }
+
+  .layout-main.sidebar-collapsed {
+    margin-left: 0;
+  }
+
+  /* 小屏模式下，桌面端按钮隐藏 */
+  .desktop-toggle {
+    display: none;
+  }
+}
+
+@media (max-width: 480px) {
+  .layout-main {
+    padding: 12px;
+  }
 }

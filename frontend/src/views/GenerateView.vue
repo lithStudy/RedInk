@@ -1,23 +1,20 @@
 <template>
-  <div class="container">
-    <div class="page-header">
-      <div>
-        <h1 class="page-title">生成结果</h1>
-        <p class="page-subtitle">
-          查看已生成的图片
-        </p>
+  <div class="generate-page">
+    <div class="generate-content">
+      <div class="page-header-card">
+        <div class="header-info">
+          <h1 class="page-title">生成结果</h1>
+          <p class="page-subtitle">查看已生成的图片</p>
+        </div>
+        <div class="header-actions">
+          <button class="btn btn-secondary btn-sm" @click="goBackToOutline">
+            返回大纲
+          </button>
+        </div>
       </div>
-      <div style="display: flex; gap: 10px;">
-        <button class="btn" @click="goBackToOutline" style="border:1px solid var(--border-color)">
-          返回大纲
-        </button>
-      </div>
-    </div>
 
-    <div class="card">
-
-      <div class="grid-cols-4" style="margin-top: 40px;">
-        <div v-for="image in store.images" :key="image.index" class="image-card">
+      <div class="images-grid">
+        <div v-for="image in images" :key="image.index" class="image-card">
           <!-- 图片展示区域 -->
           <div v-if="image.url && image.status === 'done'" class="image-preview">
             <img :src="image.url" :alt="`第 ${image.index + 1} 页`" />
@@ -73,14 +70,35 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { ref, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
-import { useGeneratorStore } from '../stores/generator'
-import { regenerateImage as apiRegenerateImage, getHistory } from '../api'
+import { regenerateImage as apiRegenerateImage, getHistory, updateHistory, type Page } from '../api'
 
 const router = useRouter()
 const route = useRoute()
-const store = useGeneratorStore()
+
+// 本地状态
+const recordId = ref<string | null>(null)
+const topic = ref<string>('')
+const outline = ref<{
+  raw: string
+  pages: Page[]
+  metadata?: {
+    title: string
+    content: string
+    tags: string
+  }
+}>({
+  raw: '',
+  pages: [],
+  metadata: undefined
+})
+const images = ref<Array<{
+  page_id: number
+  index: number
+  url: string
+  status: 'generating' | 'done' | 'error' | 'retrying'
+}>>([])
 
 
 const getStatusText = (status: string) => {
@@ -95,31 +113,45 @@ const getStatusText = (status: string) => {
 
 // 重试单张图片（异步并发执行，不阻塞）
 function retrySingleImage(index: number) {
-  if (!store.taskId) return
+  if (!recordId.value) return
 
-  const page = store.outline.pages.find(p => p.index === index)
+  const page = outline.value.pages.find(p => p.index === index)
   if (!page) return
 
   // 立即设置为重试状态
-  store.setImageRetrying(index)
+  const img = images.value.find(img => img.index === index)
+  if (img) {
+    img.status = 'retrying'
+  }
 
   // 构建上下文信息
   const context = {
-    fullOutline: store.outline.raw || '',
-    userTopic: store.topic || ''
+    fullOutline: outline.value.raw || '',
+    userTopic: topic.value || ''
   }
 
   // 异步执行重绘，不阻塞
-  apiRegenerateImage(store.taskId, page, true, context)
-    .then(result => {
+  apiRegenerateImage(recordId.value, page, true, context)
+    .then(async result => {
       if (result.success && result.image_url) {
-        store.updateImage(index, result.image_url)
+        if (img) {
+          img.url = `${result.image_url}?t=${Date.now()}`
+          img.status = 'done'
+        }
+        // 重新加载数据以确保同步
+        if (recordId.value) {
+          await loadData(recordId.value)
+        }
       } else {
-        store.updateProgress(index, 'error', undefined, result.error)
+        if (img) {
+          img.status = 'error'
+        }
       }
     })
     .catch(e => {
-      store.updateProgress(index, 'error', undefined, String(e))
+      if (img) {
+        img.status = 'error'
+      }
     })
 }
 
@@ -130,63 +162,62 @@ function regenerateImage(index: number) {
 
 // 返回大纲页
 function goBackToOutline() {
-  if (store.recordId) {
-    router.push(`/outline?recordId=${store.recordId}`)
+  if (recordId.value) {
+    router.push(`/outline?recordId=${recordId.value}`)
   } else {
     router.push('/outline')
   }
 }
 
+// 从后端加载数据
+async function loadData(recordIdParam: string) {
+  try {
+    const res = await getHistory(recordIdParam)
+    if (res.success && res.record) {
+      const record = res.record
+      recordId.value = record.id
+      topic.value = record.topic || record.title || ''
+      outline.value = {
+        raw: record.outline.raw || '',
+        pages: record.outline.pages || [],
+        metadata: record.outline.metadata
+      }
+      
+      // 从 record.outline.pages 中直接获取图片信息
+      images.value = record.outline.pages.map((page) => {
+        if (page.image?.filename) {
+          const timestamp = Date.now()
+          const filename = page.image.filename
+          return {
+            page_id: page.id!,
+            index: page.index,
+            url: `/api/images/${record.id}/${filename}?t=${timestamp}`,
+            status: 'done' as const
+          }
+        }
+        return {
+          page_id: page.id!,
+          index: page.index,
+          url: '',
+          status: 'error' as const
+        }
+      })
+    }
+  } catch (e) {
+    console.error('❌ 加载数据失败:', e)
+  }
+}
 
 onMounted(async () => {
-  const recordId = route.query.recordId as string
+  const recordIdParam = route.query.recordId as string
   
-  // 如果有 recordId，从后端加载数据
-  if (recordId && (!store.recordId || store.recordId !== recordId)) {
-    console.log('🔄 从后端加载任务数据:', recordId)
-    
-    // 尝试从缓存快速恢复
-    store.loadFromCache(recordId)
-    
-    // 从后端加载最新数据
-    try {
-      const res = await getHistory(recordId)
-      if (res.success && res.record) {
-        const record = res.record
-        store.recordId = record.id
-        store.taskId = record.id  // task_id 就是 record_id
-        store.setTopic(record.title)
-        store.setOutline(record.outline.raw, record.outline.pages, record.outline.metadata)
-        
-        // 从 record.outline.pages 中直接获取图片信息
-        store.images = record.outline.pages.map((page) => {
-          if (page.image?.filename) {
-            const timestamp = Date.now()
-            const filename = page.image.filename
-            return {
-              index: page.index,
-              url: `/api/images/${record.id}/${filename}?t=${timestamp}`,
-              status: 'done' as const,
-              retryable: true
-            }
-          }
-          return {
-            index: page.index,
-            url: '',
-            status: 'error' as const,
-            retryable: true
-          }
-        })
-        
-        store.saveToStorage()
-      }
-    } catch (e) {
-      console.error('❌ 加载数据失败:', e)
-    }
+  if (recordIdParam) {
+    console.log('🔄 从后端加载任务数据:', recordIdParam)
+    await loadData(recordIdParam)
   }
   
   // 检查是否有数据
-  if (store.outline.pages.length === 0) {
+  if (outline.value.pages.length === 0) {
     router.push('/')
     return
   }
@@ -194,11 +225,123 @@ onMounted(async () => {
 </script>
 
 <style scoped>
+/* 主容器 - 使用flex布局 */
+.generate-page {
+  width: 100%;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.generate-content {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  max-width: 1400px;
+  margin: 0 auto;
+  width: 100%;
+  padding: 16px;
+}
+
+/* 页面头部卡片 */
+.page-header-card {
+  background: white;
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+  padding: 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.header-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.page-title {
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--text-main);
+  margin: 0 0 6px 0;
+  letter-spacing: -0.5px;
+}
+
+.page-subtitle {
+  font-size: 13px;
+  color: var(--text-sub);
+  margin: 0;
+  line-height: 1.5;
+}
+
+.header-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+/* 按钮样式 */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border: none;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+  white-space: nowrap;
+}
+
+.btn-sm {
+  padding: 6px 12px;
+  font-size: 12px;
+}
+
+.btn-secondary {
+  background: white;
+  color: var(--text-main);
+  border: 1px solid var(--border-color);
+}
+
+.btn-secondary:hover:not(:disabled) {
+  background: #f9f9f9;
+  border-color: var(--border-hover);
+}
+
+/* 图片网格 - 使用flex布局 */
+.images-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  width: 100%;
+}
+
+.image-card {
+  flex: 0 0 calc(25% - 12px);
+  min-width: 200px;
+  background: white;
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  transition: box-shadow 0.2s;
+}
+
+.image-card:hover {
+  box-shadow: var(--shadow-md);
+}
+
 .image-preview {
   aspect-ratio: 3/4;
   overflow: hidden;
   position: relative;
-  flex: 1; /* 填充卡片剩余空间 */
+  flex: 1;
 }
 
 .image-preview img {
@@ -232,9 +375,9 @@ onMounted(async () => {
   padding: 8px 16px;
   background: white;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
-  font-size: 13px;
+  font-size: 12px;
   color: #333;
   transition: all 0.2s;
 }
@@ -257,8 +400,8 @@ onMounted(async () => {
   align-items: center;
   justify-content: center;
   gap: 10px;
-  flex: 1; /* 填充卡片剩余空间 */
-  min-height: 240px; /* 确保有最小高度 */
+  flex: 1;
+  min-height: 200px;
 }
 
 .error-placeholder {
@@ -266,32 +409,32 @@ onMounted(async () => {
 }
 
 .error-icon {
-  width: 40px;
-  height: 40px;
+  width: 32px;
+  height: 32px;
   border-radius: 50%;
   background: #ff4d4f;
   color: white;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 24px;
+  font-size: 20px;
   font-weight: bold;
 }
 
 .status-text {
-  font-size: 13px;
+  font-size: 12px;
   color: var(--text-sub);
 }
 
 .retry-btn {
   margin-top: 8px;
-  padding: 6px 16px;
+  padding: 6px 14px;
   background: var(--primary);
   color: white;
   border: none;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
-  font-size: 12px;
+  font-size: 11px;
   transition: all 0.2s;
 }
 
@@ -307,22 +450,24 @@ onMounted(async () => {
 }
 
 .image-footer {
-  padding: 12px;
+  padding: 10px 12px;
   border-top: 1px solid #f0f0f0;
   display: flex;
   justify-content: space-between;
   align-items: center;
+  background: white;
 }
 
 .page-label {
-  font-size: 12px;
+  font-size: 11px;
   color: var(--text-sub);
 }
 
 .status-badge {
   font-size: 10px;
   padding: 2px 6px;
-  border-radius: 4px;
+  border-radius: 3px;
+  font-weight: 500;
 }
 
 .status-badge.done {
@@ -342,8 +487,8 @@ onMounted(async () => {
 }
 
 .spinner {
-  width: 24px;
-  height: 24px;
+  width: 20px;
+  height: 20px;
   border: 2px solid var(--primary);
   border-top-color: transparent;
   border-radius: 50%;
@@ -356,18 +501,56 @@ onMounted(async () => {
   }
 }
 
-.btn-danger {
-  background: #ff4d4f;
-  color: white;
-  border: none;
+/* 响应式设计 */
+@media (max-width: 1024px) {
+  .image-card {
+    flex: 0 0 calc(33.333% - 11px);
+  }
 }
 
-.btn-danger:hover {
-  background: #ff7875;
+@media (max-width: 768px) {
+  .generate-content {
+    padding: 12px;
+    gap: 12px;
+  }
+
+  .page-header-card {
+    flex-direction: column;
+    align-items: stretch;
+    padding: 12px;
+  }
+
+  .header-actions {
+    width: 100%;
+  }
+
+  .btn {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .images-grid {
+    gap: 12px;
+  }
+
+  .image-card {
+    flex: 0 0 calc(50% - 6px);
+    min-width: 0;
+  }
 }
 
-.btn-danger:disabled {
-  background: #ffccc7;
-  cursor: not-allowed;
+@media (max-width: 480px) {
+  .generate-content {
+    padding: 8px;
+    gap: 10px;
+  }
+
+  .page-title {
+    font-size: 20px;
+  }
+
+  .image-card {
+    flex: 0 0 100%;
+  }
 }
 </style>

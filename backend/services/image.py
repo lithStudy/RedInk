@@ -99,14 +99,14 @@ class ImageService:
             logger.warning(f"加载基调失败: {e}")
             return None
 
-    def _save_image(self, image_data: bytes, record_id: str, page_index: int, task_dir: str = None) -> Tuple[str, str, int]:
+    def _save_image(self, image_data: bytes, record_id: str, page_id: int, task_dir: str = None) -> Tuple[str, str, int]:
         """
         保存图片到本地并写入数据库，同时生成缩略图
         
         Args:
             image_data: 图片二进制数据
             record_id: 记录 ID
-            page_index: 页面索引
+            page_id: 页面 ID
             task_dir: 任务目录（如果为None则使用当前任务目录）
             
         Returns:
@@ -141,18 +141,23 @@ class ImageService:
             filename=filename,
             thumbnail_filename=thumbnail_filename
         )
+        logger.debug(f"创建图片记录: image_id={image_id}, filename={filename}")
         
-        # 更新 page 的 image_id
-        # 先获取 tone_id，再获取 outline_id
-        tone = ToneModel.get_by_record(record_id)
-        if tone:
-            outline = OutlineModel.get_by_tone(tone['id'])
-            if outline:
-                page = PageModel.get_by_outline_and_index(outline['id'], page_index)
-                if page:
-                    PageModel.update_image(page['id'], image_id)
+        # 更新 page 的 image_id（直接使用 page_id）
+        if page_id:
+            try:
+                success = PageModel.update_image(page_id, image_id)
+                if success:
+                    logger.info(f"✅ 页面图片关联已更新: page_id={page_id}, image_id={image_id}")
+                else:
+                    logger.error(f"❌ 页面图片关联更新失败: page_id={page_id}, image_id={image_id}")
+            except Exception as e:
+                logger.error(f"❌ 更新页面图片关联时发生异常: page_id={page_id}, image_id={image_id}, error={e}")
+                raise
+        else:
+            logger.warning(f"⚠️ page_id 为空，跳过图片关联更新: filename={filename}")
         
-        logger.info(f"图片已保存: filename={filename}, image_id={image_id}")
+        logger.info(f"图片已保存: filename={filename}, image_id={image_id}, page_id={page_id}")
 
         return filepath, filename, image_id
 
@@ -180,9 +185,14 @@ class ImageService:
             user_topic: 用户原始输入
 
         Returns:
-            (index, success, filename, error_message)
+            (page_id, success, filename, error_message)
         """
-        index = page["index"]
+        page_id = page.get("id")
+        if not page_id:
+            error_msg = "页面缺少 id 字段，无法更新图片关联"
+            logger.error(f"❌ 图片生成失败: {error_msg}")
+            return (None, False, None, error_msg)
+        
         page_type = page["type"]
         page_content = page["content"]
 
@@ -190,7 +200,7 @@ class ImageService:
 
         for attempt in range(max_retries):
             try:
-                logger.debug(f"生成图片 [{index}]: type={page_type}, attempt={attempt + 1}/{max_retries}")
+                logger.debug(f"生成图片 [page_id={page_id}]: type={page_type}, attempt={attempt + 1}/{max_retries}")
 
                 # 根据配置选择模板（短 prompt 或完整 prompt）
                 if self.use_short_prompt and self.prompt_template_short:
@@ -249,14 +259,14 @@ class ImageService:
                     )
 
                 # 保存图片（使用当前任务目录）并写入数据库
-                filepath, filename, image_id = self._save_image(image_data, record_id, index, self.current_task_dir)
-                logger.info(f"✅ 图片 [{index}] 生成成功: {filename}, image_id={image_id}")
+                filepath, filename, image_id = self._save_image(image_data, record_id, page_id, self.current_task_dir)
+                logger.info(f"✅ 图片 [page_id={page_id}] 生成成功: {filename}, image_id={image_id}")
 
-                return (index, True, filename, None)
+                return (page_id, True, filename, None)
 
             except Exception as e:
                 error_msg = str(e)
-                logger.warning(f"图片 [{index}] 生成失败 (尝试 {attempt + 1}/{max_retries}): {error_msg[:200]}")
+                logger.warning(f"图片 [page_id={page_id}] 生成失败 (尝试 {attempt + 1}/{max_retries}): {error_msg[:200]}")
 
                 if attempt < max_retries - 1:
                     # 等待后重试
@@ -265,10 +275,10 @@ class ImageService:
                     time.sleep(wait_time)
                     continue
 
-                logger.error(f"❌ 图片 [{index}] 生成失败，已达最大重试次数")
-                return (index, False, None, error_msg)
+                logger.error(f"❌ 图片 [page_id={page_id}] 生成失败，已达最大重试次数")
+                return (page_id, False, None, error_msg)
 
-        return (index, False, None, "超过最大重试次数")
+        return (page_id, False, None, "超过最大重试次数")
 
     def generate_images(
         self,
@@ -349,7 +359,7 @@ class ImageService:
             yield {
                 "event": "progress",
                                 "data": {
-                                    "index": cover_page["index"],
+                                    "page_id": cover_page.get("id"),
                                     "status": "generating",
                                     "message": "正在生成封面...",
                                     "current": 1,
@@ -360,14 +370,14 @@ class ImageService:
             }
 
             # 生成封面（使用用户上传的图片作为参考）
-            index, success, filename, error = self._generate_single_image(
+            page_id, success, filename, error = self._generate_single_image(
                 cover_page, record_id, reference_image=None, full_outline=full_outline,
                 user_images=compressed_user_images, user_topic=user_topic, tone=tone
             )
 
             if success:
                 generated_images.append(filename)
-                self._task_states[record_id]["generated"][index] = filename
+                self._task_states[record_id]["generated"][page_id] = filename
 
                 # 读取封面图片作为参考，并立即压缩到200KB以内
                 cover_path = os.path.join(self.current_task_dir, filename)
@@ -381,7 +391,7 @@ class ImageService:
                 yield {
                         "event": "complete",
                         "data": {
-                            "index": index,
+                            "page_id": page_id,
                             "status": "done",
                             "image_url": f"/api/images/{record_id}/{filename}",
                             "phase": "cover"
@@ -389,12 +399,12 @@ class ImageService:
                 }
             else:
                 failed_pages.append(cover_page)
-                self._task_states[record_id]["failed"][index] = error
+                self._task_states[record_id]["failed"][page_id] = error
 
                 yield {
                     "event": "error",
                     "data": {
-                        "index": index,
+                        "page_id": page_id,
                         "status": "error",
                         "message": error,
                         "retryable": True,
@@ -482,7 +492,7 @@ class ImageService:
                     yield {
                         "event": "progress",
                         "data": {
-                            "index": page["index"],
+                            "page_id": page.get("id"),
                             "status": "generating",
                             "current": len(generated_images) + 1,
                             "total": total,
@@ -510,16 +520,16 @@ class ImageService:
 
                         page = future_to_page[future]
                         try:
-                            index, success, filename, error = future.result()
+                            page_id, success, filename, error = future.result()
 
                             if success:
                                 generated_images.append(filename)
-                                self._task_states[record_id]["generated"][index] = filename
+                                self._task_states[record_id]["generated"][page_id] = filename
 
                                 yield {
                                     "event": "complete",
                                     "data": {
-                                        "index": index,
+                                        "page_id": page_id,
                                         "status": "done",
                                         "image_url": f"/api/images/{record_id}/{filename}",
                                         "phase": "content"
@@ -527,12 +537,12 @@ class ImageService:
                                 }
                             else:
                                 failed_pages.append(page)
-                                self._task_states[record_id]["failed"][index] = error
+                                self._task_states[record_id]["failed"][page_id] = error
 
                                 yield {
                                     "event": "error",
                                     "data": {
-                                        "index": index,
+                                        "page_id": page_id,
                                         "status": "error",
                                         "message": error,
                                         "retryable": True,
@@ -543,12 +553,14 @@ class ImageService:
                         except Exception as e:
                             failed_pages.append(page)
                             error_msg = str(e)
-                            self._task_states[record_id]["failed"][page["index"]] = error_msg
+                            page_id = page.get("id")
+                            if page_id:
+                                self._task_states[record_id]["failed"][page_id] = error_msg
 
                             yield {
                                 "event": "error",
                                 "data": {
-                                    "index": page["index"],
+                                    "page_id": page_id if page_id else None,
                                     "status": "error",
                                     "message": error_msg,
                                     "retryable": True,
@@ -565,7 +577,7 @@ class ImageService:
                         "current": len(generated_images),
                         "total": total,
                         "phase": "content",
-                        "task_id": record_id
+                        "record_id": record_id
                     }
                 }
 
@@ -587,7 +599,7 @@ class ImageService:
                     yield {
                         "event": "progress",
                         "data": {
-                            "index": page["index"],
+                            "page_id": page.get("id"),
                             "status": "generating",
                             "current": len(generated_images) + 1,
                             "total": total,
@@ -622,10 +634,10 @@ class ImageService:
                             return cover_image_data
 
                     # 生成单张图片
-                    index, success, filename, error = self._generate_single_image(
+                    page_id, success, filename, error = self._generate_single_image(
                         page,
                         record_id,
-                        get_ref_for_page(page["index"]),  # 根据模式获取参考图
+                        get_ref_for_page(page.get("index", 0)),  # 根据模式获取参考图
                         0,
                         full_outline,
                         compressed_user_images if reference_mode == 'custom' else None,  # 只在custom模式传递user_images
@@ -635,12 +647,12 @@ class ImageService:
 
                     if success:
                         generated_images.append(filename)
-                        self._task_states[record_id]["generated"][index] = filename
+                        self._task_states[record_id]["generated"][page_id] = filename
 
                         yield {
                             "event": "complete",
                             "data": {
-                                "index": index,
+                                "page_id": page_id,
                                 "status": "done",
                                 "image_url": f"/api/images/{record_id}/{filename}",
                                 "phase": "content"
@@ -648,12 +660,12 @@ class ImageService:
                         }
                     else:
                         failed_pages.append(page)
-                        self._task_states[record_id]["failed"][index] = error
+                        self._task_states[record_id]["failed"][page_id] = error
 
                         yield {
                             "event": "error",
                             "data": {
-                                "index": index,
+                                "page_id": page_id,
                                 "status": "error",
                                 "message": error,
                                 "retryable": True,
@@ -671,7 +683,7 @@ class ImageService:
                 "total": total,
                 "completed": len(generated_images),
                 "failed": len(failed_pages),
-                "failed_indices": [p["index"] for p in failed_pages]
+                "failed_page_ids": [p.get("id") for p in failed_pages if p.get("id")]
             }
         }
 
@@ -791,7 +803,7 @@ class ImageService:
                 record_id, page["index"], reference_mode, task_state
             )
 
-        index, success, filename, error = self._generate_single_image(
+        page_id, success, filename, error = self._generate_single_image(
             page,
             record_id,
             reference_image,
@@ -804,19 +816,19 @@ class ImageService:
 
         if success:
             if record_id in self._task_states:
-                self._task_states[record_id]["generated"][index] = filename
-                if index in self._task_states[record_id]["failed"]:
-                    del self._task_states[record_id]["failed"][index]
+                self._task_states[record_id]["generated"][page_id] = filename
+                if page_id in self._task_states[record_id]["failed"]:
+                    del self._task_states[record_id]["failed"][page_id]
 
             return {
                 "success": True,
-                "index": index,
+                "page_id": page_id,
                 "image_url": f"/api/images/{record_id}/{filename}"
             }
         else:
             return {
                 "success": False,
-                "index": index,
+                "page_id": page_id,
                 "error": error,
                 "retryable": True
             }
@@ -883,19 +895,19 @@ class ImageService:
             for future in as_completed(future_to_page):
                 page = future_to_page[future]
                 try:
-                    index, success, filename, error = future.result()
+                    page_id, success, filename, error = future.result()
 
                     if success:
                         success_count += 1
                         if record_id in self._task_states:
-                            self._task_states[record_id]["generated"][index] = filename
-                            if index in self._task_states[record_id]["failed"]:
-                                del self._task_states[record_id]["failed"][index]
+                            self._task_states[record_id]["generated"][page_id] = filename
+                            if page_id in self._task_states[record_id]["failed"]:
+                                del self._task_states[record_id]["failed"][page_id]
 
                         yield {
                             "event": "complete",
                             "data": {
-                                "index": index,
+                                "page_id": page_id,
                                 "status": "done",
                                 "image_url": f"/api/images/{record_id}/{filename}"
                             }
@@ -905,7 +917,7 @@ class ImageService:
                         yield {
                             "event": "error",
                             "data": {
-                                "index": index,
+                                "page_id": page_id,
                                 "status": "error",
                                 "message": error,
                                 "retryable": True
@@ -914,10 +926,11 @@ class ImageService:
 
                 except Exception as e:
                     failed_count += 1
+                    page_id = page.get("id")
                     yield {
                         "event": "error",
                         "data": {
-                            "index": page["index"],
+                            "page_id": page_id if page_id else None,
                             "status": "error",
                             "message": str(e),
                             "retryable": True
@@ -982,6 +995,134 @@ class ImageService:
         """获取任务状态"""
         return self._task_states.get(record_id)
 
+    def generate_single_image_by_page_id(
+        self,
+        record_id: str,
+        page_id: int,
+        full_outline: str = "",
+        user_images: Optional[List[bytes]] = None,
+        user_topic: str = "",
+        reference_mode: str = "cover"
+    ) -> Dict[str, Any]:
+        """
+        根据pageId生成单张图片（同步接口，直接返回结果）
+
+        Args:
+            record_id: 记录ID
+            page_id: 页面ID
+            full_outline: 完整大纲文本
+            user_images: 用户上传的参考图片列表
+            user_topic: 用户原始输入
+            reference_mode: 参考图模式
+
+        Returns:
+            生成结果字典
+        """
+        # 设置任务目录
+        self.current_task_dir = os.path.join(self.history_root_dir, record_id)
+        os.makedirs(self.current_task_dir, exist_ok=True)
+
+        # 从数据库加载页面信息
+        from backend.models import PageModel, OutlineModel, ToneModel
+        page_db = PageModel.get_by_id(page_id)
+        if not page_db:
+            return {
+                "success": False,
+                "error": f"页面不存在: page_id={page_id}"
+            }
+
+        # 构建页面数据
+        page = {
+            "id": page_db["id"],
+            "index": page_db["page_index"],
+            "type": page_db["page_type"],
+            "content": page_db["content"]
+        }
+
+        # 加载内容基调
+        tone = self._load_tone_from_record(record_id)
+
+        # 获取参考图片
+        reference_image = None
+        tone_obj = ToneModel.get_by_record(record_id)
+        outline_obj = None
+        all_pages = []
+        if tone_obj:
+            outline_obj = OutlineModel.get_by_tone(tone_obj['id'])
+            if outline_obj:
+                all_pages = PageModel.get_by_outline(outline_obj['id'])
+
+        if reference_mode == 'cover':
+            # 从数据库查找封面图
+            for p in all_pages:
+                if p['page_type'] == 'cover' and p.get('image'):
+                    cover_path = os.path.join(self.current_task_dir, p['image']['filename'])
+                    if os.path.exists(cover_path):
+                        with open(cover_path, "rb") as f:
+                            cover_data = f.read()
+                        reference_image = compress_image(cover_data, max_size_kb=200)
+                        break
+        elif reference_mode == 'previous':
+            # 使用上一张图片
+            prev_index = page["index"] - 1
+            while prev_index >= 0:
+                # 从数据库查找上一张图片
+                for p in all_pages:
+                    if p['page_index'] == prev_index and p.get('image'):
+                        prev_path = os.path.join(self.current_task_dir, p['image']['filename'])
+                        if os.path.exists(prev_path):
+                            with open(prev_path, "rb") as f:
+                                prev_data = f.read()
+                            reference_image = compress_image(prev_data, max_size_kb=200)
+                            break
+                if reference_image:
+                    break
+                prev_index -= 1
+            # 如果没有找到，回退到封面
+            if not reference_image:
+                for p in all_pages:
+                    if p['page_type'] == 'cover' and p.get('image'):
+                        cover_path = os.path.join(self.current_task_dir, p['image']['filename'])
+                        if os.path.exists(cover_path):
+                            with open(cover_path, "rb") as f:
+                                cover_data = f.read()
+                            reference_image = compress_image(cover_data, max_size_kb=200)
+                            break
+        elif reference_mode == 'custom':
+            # 使用用户上传的图片
+            if user_images and len(user_images) > 0:
+                reference_image = user_images[0]
+
+        # 压缩用户上传的参考图
+        compressed_user_images = None
+        if user_images:
+            compressed_user_images = [compress_image(img, max_size_kb=200) for img in user_images]
+
+        # 生成图片
+        page_id_result, success, filename, error = self._generate_single_image(
+            page,
+            record_id,
+            reference_image,
+            0,
+            full_outline,
+            compressed_user_images if reference_mode == 'custom' else None,
+            user_topic,
+            tone
+        )
+
+        if success:
+            return {
+                "success": True,
+                "page_id": page_id_result,
+                "image_url": f"/api/images/{record_id}/{filename}"
+            }
+        else:
+            return {
+                "success": False,
+                "page_id": page_id_result,
+                "error": error
+            }
+
     def cleanup_task(self, record_id: str):
         """清理任务状态（释放内存）"""
         if record_id in self._task_states:
@@ -1043,11 +1184,12 @@ class ImageService:
                 'outline': outline['raw_outline'],
                 'pages': [
                     {
+                        'id': p['id'],  # 包含页面ID，用于更新图片关联
                         'index': p['page_index'],
                         'type': p['page_type'],
                         'content': p['content']
                     }
-                    for p in pages
+                    for p in pages  
                 ],
                 'has_images': bool(record and record.get('reference_images')),
                 'metadata': {
@@ -1063,17 +1205,17 @@ class ImageService:
             logger.error(f"加载大纲失败: {e}")
             return None
 
-    def scan_generated_images(self, task_id: str) -> set:
+    def scan_generated_images(self, record_id: str) -> set:
         """
         扫描任务文件夹中已生成的图片
 
         Args:
-            task_id: 任务ID
+            record_id: 记录ID
 
         Returns:
             已生成的图片索引集合
         """
-        task_dir = os.path.join(self.history_root_dir, task_id)
+        task_dir = os.path.join(self.history_root_dir, record_id)
         if not os.path.exists(task_dir):
             return set()
 
@@ -1092,33 +1234,51 @@ class ImageService:
 
         return generated_indices
 
-    def get_pending_pages(self, task_id: str) -> List[Dict]:
+    def get_pending_pages(self, record_id: str) -> List[Dict]:
         """
-        获取未完成的页面列表（从文件夹扫描）
+        获取未完成的页面列表（从数据库查询）
 
         Args:
-            task_id: 任务ID
+            record_id: 记录ID
 
         Returns:
             未完成的页面列表
         """
-        # 加载大纲（task_id 和 record_id 相同）
-        outline_data = self.load_outline_from_record(task_id)
+        # 加载大纲
+        outline_data = self.load_outline_from_record(record_id)
         if not outline_data:
-            logger.warning(f"无法加载大纲，task_id: {task_id}")
+            logger.warning(f"无法加载大纲，record_id: {record_id}")
             return []
 
-        all_pages = outline_data.get("pages", [])
-        if not all_pages:
+        # 获取 tone_id 和 outline_id
+        tone = ToneModel.get_by_record(record_id)
+        if not tone:
+            logger.warning(f"基调不存在: record_id={record_id}")
+            return []
+        
+        outline = OutlineModel.get_by_tone(tone['id'])
+        if not outline:
+            logger.warning(f"大纲不存在: record_id={record_id}")
             return []
 
-        # 扫描已生成的图片
-        generated_indices = self.scan_generated_images(task_id)
-        logger.info(f"任务 {task_id} 已生成图片索引: {generated_indices}")
-
-        # 返回未生成的页面
-        pending_pages = [p for p in all_pages if p["index"] not in generated_indices]
-        logger.info(f"任务 {task_id} 待生成页面数: {len(pending_pages)}")
+        # 从数据库获取所有页面（包含 image_id 信息）
+        all_pages_db = PageModel.get_by_outline(outline['id'])
+        
+        # 过滤出未生成图片的页面（image_id 为 None 的页面）
+        pending_pages_db = [p for p in all_pages_db if p.get('image_id') is None]
+        
+        # 转换为与 outline_data 中 pages 格式一致的数据结构
+        pending_pages = [
+            {
+                'id': p['id'],
+                'index': p['page_index'],
+                'type': p['page_type'],
+                'content': p['content']
+            }
+            for p in pending_pages_db
+        ]
+        
+        logger.info(f"记录 {record_id} 总页面数: {len(all_pages_db)}, 已生成: {len(all_pages_db) - len(pending_pages)}, 待生成: {len(pending_pages)}")
         return pending_pages
 
     def continue_generation(
@@ -1172,12 +1332,12 @@ class ImageService:
                 "event": "finish",
                 "data": {
                     "success": True,
-                    "task_id": record_id,
+                    "record_id": record_id,
                     "images": generated_images,
                     "total": len(outline_data.get("pages", [])),
                     "completed": len(generated_indices),
                     "failed": 0,
-                    "failed_indices": [],
+                    "failed_page_ids": [],
                     "message": "没有需要生成的页面"
                 }
             }
@@ -1192,8 +1352,8 @@ class ImageService:
             user_topic = outline_data.get("topic", "")
 
         # 加载内容基调
-        tone = self._load_tone_from_record(record_id)
-        if tone:
+        tone_text = self._load_tone_from_record(record_id)
+        if tone_text:
             logger.info("✅ 已加载内容基调，将应用于图片生成")
         else:
             logger.info("⚠️ 未找到内容基调，将使用默认风格")
@@ -1209,11 +1369,22 @@ class ImageService:
         # 用户上传的图片暂时不支持从文件恢复（需要前端传入）
         user_images = None
 
-        # 获取总页数和已生成数量
+        # 获取总页数和已生成数量（从数据库查询）
         all_pages = outline_data.get("pages", [])
         total_pages = len(all_pages)
-        generated_indices = self.scan_generated_images(record_id)
-        generated_count = len(generated_indices)
+        
+        # 从数据库查询已生成图片的页面数量
+        tone_obj = ToneModel.get_by_record(record_id)
+        if tone_obj:
+            outline = OutlineModel.get_by_tone(tone_obj['id'])
+            if outline:
+                all_pages_db = PageModel.get_by_outline(outline['id'])
+                generated_count = len([p for p in all_pages_db if p.get('image_id') is not None])
+                logger.info(f"记录 {record_id} 已生成图片数量: {generated_count}, 总页数: {total_pages}, 待生成: {len(pages)}")
+            else:
+                generated_count = 0
+        else:
+            generated_count = 0
 
         # 如果没有封面图，尝试从文件系统加载
         if reference_image is None:
@@ -1231,7 +1402,7 @@ class ImageService:
         yield {
             "event": "continue_start",
             "data": {
-                "task_id": record_id,
+                "record_id": record_id,
                 "pending_count": len(pages),
                 "total": total_pages,
                 "completed": generated_count,
@@ -1255,19 +1426,19 @@ class ImageService:
                         full_outline,
                         user_images,
                         user_topic,
-                        tone
+                        tone_text
                     ): page
                     for page in pages
                 }
 
-                # 发送每个页面的进度
-                for page in pages:
+                # 发送每个页面的进度（为每个页面计算正确的当前进度）
+                for idx, page in enumerate(pages):
                     yield {
                         "event": "progress",
                         "data": {
-                            "index": page["index"],
+                            "page_id": page.get("id"),
                             "status": "generating",
-                            "current": generated_count + 1,
+                            "current": generated_count + idx + 1,
                             "total": total_pages,
                             "phase": "continue"
                         }
@@ -1284,7 +1455,7 @@ class ImageService:
                         yield {
                             "event": "stopped",
                             "data": {
-                                "task_id": record_id,
+                                "record_id": record_id,
                                 "message": "生成已停止",
                                 "completed": len(current_generated),
                                 "pending": total_pages - len(current_generated)
@@ -1294,17 +1465,17 @@ class ImageService:
 
                     page = future_to_page[future]
                     try:
-                        index, success, filename, error = future.result()
+                        page_id, success, filename, error = future.result()
 
                         if success:
                             generated_count += 1
                             if record_id in self._task_states:
-                                self._task_states[record_id]["generated"][index] = filename
+                                self._task_states[record_id]["generated"][page_id] = filename
 
                             yield {
                                 "event": "complete",
                                 "data": {
-                                    "index": index,
+                                    "page_id": page_id,
                                     "status": "done",
                                     "image_url": f"/api/images/{record_id}/{filename}",
                                     "phase": "continue"
@@ -1313,12 +1484,12 @@ class ImageService:
                         else:
                             failed_pages.append(page)
                             if record_id in self._task_states:
-                                self._task_states[record_id]["failed"][index] = error
+                                self._task_states[record_id]["failed"][page_id] = error
 
                             yield {
                                 "event": "error",
                                 "data": {
-                                    "index": index,
+                                    "page_id": page_id,
                                     "status": "error",
                                     "message": error,
                                     "retryable": True,
@@ -1329,13 +1500,14 @@ class ImageService:
                     except Exception as e:
                         failed_pages.append(page)
                         error_msg = str(e)
-                        if record_id in self._task_states:
-                            self._task_states[record_id]["failed"][page["index"]] = error_msg
+                        page_id = page.get("id")
+                        if record_id in self._task_states and page_id:
+                            self._task_states[record_id]["failed"][page_id] = error_msg
 
                         yield {
                             "event": "error",
                             "data": {
-                                "index": page["index"],
+                                "page_id": page_id if page_id else None,
                                 "status": "error",
                                 "message": error_msg,
                                 "retryable": True,
@@ -1344,7 +1516,9 @@ class ImageService:
                         }
         else:
             # 顺序模式
-            for page in pages:
+            # 保存初始的已生成数量，用于计算进度（避免在循环中更新导致计算错误）
+            initial_generated_count = generated_count
+            for page_idx, page in enumerate(pages):
                 # 检查是否被停止
                 if self.is_task_stopped(record_id):
                     # 重新扫描已生成的图片
@@ -1352,7 +1526,7 @@ class ImageService:
                     yield {
                         "event": "stopped",
                         "data": {
-                            "task_id": record_id,
+                            "record_id": record_id,
                             "message": "生成已停止",
                             "completed": len(current_generated),
                             "pending": total_pages - len(current_generated)
@@ -1360,18 +1534,21 @@ class ImageService:
                     }
                     return
 
+                page_id = page.get("id")
+                # 计算当前进度：初始已生成数量 + 当前正在生成的页面索引 + 1
+                current_progress = initial_generated_count + page_idx + 1
                 yield {
                     "event": "progress",
                     "data": {
-                        "index": page["index"],
+                        "page_id": page_id,
                         "status": "generating",
-                        "current": generated_count + 1,
+                        "current": current_progress,
                         "total": total_pages,
                         "phase": "continue"
                     }
                 }
 
-                index, success, filename, error = self._generate_single_image(
+                page_id, success, filename, error = self._generate_single_image(
                     page,
                     record_id,
                     reference_image,
@@ -1379,18 +1556,18 @@ class ImageService:
                     full_outline,
                     user_images,
                     user_topic,
-                    tone
+                    tone_text
                 )
 
                 if success:
                     generated_count += 1
                     if record_id in self._task_states:
-                        self._task_states[record_id]["generated"][index] = filename
+                        self._task_states[record_id]["generated"][page_id] = filename
 
                     yield {
                         "event": "complete",
                         "data": {
-                            "index": index,
+                            "page_id": page_id,
                             "status": "done",
                             "image_url": f"/api/images/{record_id}/{filename}",
                             "phase": "continue"
@@ -1399,12 +1576,12 @@ class ImageService:
                 else:
                     failed_pages.append(page)
                     if record_id in self._task_states:
-                        self._task_states[record_id]["failed"][index] = error
+                        self._task_states[record_id]["failed"][page_id] = error
 
                     yield {
                         "event": "error",
                         "data": {
-                            "index": index,
+                            "page_id": page_id,
                             "status": "error",
                             "message": error,
                             "retryable": True,
@@ -1420,12 +1597,12 @@ class ImageService:
             "event": "finish",
             "data": {
                 "success": len(failed_pages) == 0,
-                "task_id": record_id,
+                "record_id": record_id,
                 "images": all_generated,
                 "total": total_pages,
                 "completed": len(all_generated),
                 "failed": len(failed_pages),
-                "failed_indices": [p["index"] for p in failed_pages]
+                "failed_page_ids": [p.get("id") for p in failed_pages if p.get("id")]
             }
         }
 

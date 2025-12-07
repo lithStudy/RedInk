@@ -237,13 +237,13 @@ const formattedDate = computed(() => {
 
 /* 底部区域 */
 .card-footer {
-  padding: 16px;
+  padding: 12px;
 }
 
 .card-title {
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 600;
-  margin-bottom: 8px;
+  margin-bottom: 6px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;

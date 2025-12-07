@@ -26,6 +26,76 @@ def create_image_blueprint():
 
     # ==================== 图片生成 ====================
 
+    @image_bp.route('/generate-single', methods=['POST'])
+    def generate_single_image():
+        """
+        生成单张图片（根据pageId，同步接口）
+
+        请求体：
+        - record_id: 记录 ID（必填）
+        - page_id: 页面 ID（必填）
+        - full_outline: 完整大纲文本
+        - user_topic: 用户原始输入主题
+        - user_images: base64 编码的用户参考图片列表
+        - reference_mode: 参考图模式
+
+        返回：
+        - success: 是否成功
+        - page_id: 页面ID
+        - image_url: 图片URL（成功时）
+        - error: 错误信息（失败时）
+        """
+        try:
+            data = request.get_json()
+            record_id = data.get('record_id')
+            page_id = data.get('page_id')
+            full_outline = data.get('full_outline', '')
+            user_topic = data.get('user_topic', '')
+            reference_mode = data.get('reference_mode', 'cover')
+
+            # 解析 base64 格式的用户参考图片
+            user_images = _parse_base64_images(data.get('user_images', []))
+
+            log_request('/generate-single', {
+                'record_id': record_id,
+                'page_id': page_id,
+                'reference_mode': reference_mode
+            })
+
+            if not record_id or not page_id:
+                logger.warning("单张图片生成请求缺少必要参数")
+                return jsonify({
+                    "success": False,
+                    "error": "参数错误：record_id 和 page_id 不能为空。"
+                }), 400
+
+            logger.info(f"🖼️  开始生成单张图片: record_id={record_id}, page_id={page_id}")
+            image_service = get_image_service()
+
+            result = image_service.generate_single_image_by_page_id(
+                record_id=record_id,
+                page_id=page_id,
+                full_outline=full_outline,
+                user_images=user_images if user_images else None,
+                user_topic=user_topic,
+                reference_mode=reference_mode
+            )
+
+            if result["success"]:
+                logger.info(f"✅ 单张图片生成成功: page_id={page_id}, image_url={result.get('image_url')}")
+            else:
+                logger.error(f"❌ 单张图片生成失败: page_id={page_id}, error={result.get('error')}")
+
+            return jsonify(result), 200 if result["success"] else 500
+
+        except Exception as e:
+            log_error('/generate-single', e)
+            error_msg = str(e)
+            return jsonify({
+                "success": False,
+                "error": f"图片生成异常。\n错误详情: {error_msg}"
+            }), 500
+
     @image_bp.route('/generate', methods=['POST'])
     def generate_images():
         """
@@ -33,7 +103,7 @@ def create_image_blueprint():
 
         请求体：
         - pages: 页面列表（必填）
-        - task_id: 任务 ID
+        - record_id: 记录 ID
         - full_outline: 完整大纲文本
         - user_topic: 用户原始输入主题
         - user_images: base64 编码的用户参考图片列表
@@ -107,13 +177,13 @@ def create_image_blueprint():
 
     # ==================== 图片获取 ====================
 
-    @image_bp.route('/images/<task_id>/<filename>', methods=['GET'])
-    def get_image(task_id, filename):
+    @image_bp.route('/images/<record_id>/<filename>', methods=['GET'])
+    def get_image(record_id, filename):
         """
         获取图片文件
 
         路径参数：
-        - task_id: 任务 ID
+        - record_id: 记录 ID
         - filename: 文件名
 
         查询参数：
@@ -124,7 +194,7 @@ def create_image_blueprint():
         - 失败：JSON 错误信息
         """
         try:
-            logger.debug(f"获取图片: {task_id}/{filename}")
+            logger.debug(f"获取图片: {record_id}/{filename}")
 
             # 检查是否请求缩略图
             thumbnail = request.args.get('thumbnail', 'true').lower() == 'true'
@@ -138,18 +208,18 @@ def create_image_blueprint():
             if thumbnail:
                 # 尝试返回缩略图
                 thumb_filename = f"thumb_{filename}"
-                thumb_filepath = os.path.join(history_root, task_id, thumb_filename)
+                thumb_filepath = os.path.join(history_root, record_id, thumb_filename)
 
                 if os.path.exists(thumb_filepath):
                     return send_file(thumb_filepath, mimetype='image/png')
 
             # 返回原图
-            filepath = os.path.join(history_root, task_id, filename)
+            filepath = os.path.join(history_root, record_id, filename)
 
             if not os.path.exists(filepath):
                 return jsonify({
                     "success": False,
-                    "error": f"图片不存在：{task_id}/{filename}"
+                    "error": f"图片不存在：{record_id}/{filename}"
                 }), 404
 
             return send_file(filepath, mimetype='image/png')
@@ -170,7 +240,7 @@ def create_image_blueprint():
         重试生成单张失败的图片
 
         请求体：
-        - task_id: 任务 ID（必填）
+        - record_id: 记录 ID（必填）
         - page: 页面信息（必填）
         - use_reference: 是否使用参考图（默认 true）
 
@@ -180,16 +250,14 @@ def create_image_blueprint():
         """
         try:
             data = request.get_json()
-            task_id = data.get('task_id')
+            record_id = data.get('record_id')
             page = data.get('page')
             use_reference = data.get('use_reference', True)
 
             log_request('/retry', {
-                'task_id': task_id,
+                'record_id': record_id,
                 'page_index': page.get('index') if page else None
             })
-
-            record_id = data.get('record_id')
             
             if not record_id or not page:
                 logger.warning("重试请求缺少必要参数")
@@ -223,7 +291,7 @@ def create_image_blueprint():
         批量重试失败的图片（SSE 流式返回）
 
         请求体：
-        - task_id: 任务 ID（必填）
+        - record_id: 记录 ID（必填）
         - pages: 要重试的页面列表（必填）
 
         返回：
@@ -231,27 +299,27 @@ def create_image_blueprint():
         """
         try:
             data = request.get_json()
-            task_id = data.get('task_id')
+            record_id = data.get('record_id')
             pages = data.get('pages')
 
             log_request('/retry-failed', {
-                'task_id': task_id,
+                'record_id': record_id,
                 'pages_count': len(pages) if pages else 0
             })
 
-            if not task_id or not pages:
+            if not record_id or not pages:
                 logger.warning("批量重试请求缺少必要参数")
                 return jsonify({
                     "success": False,
-                    "error": "参数错误：task_id 和 pages 不能为空。\n请提供任务ID和要重试的页面列表。"
+                    "error": "参数错误：record_id 和 pages 不能为空。\n请提供记录ID和要重试的页面列表。"
                 }), 400
 
-            logger.info(f"🔄 批量重试失败图片: task={task_id}, 共 {len(pages)} 页")
+            logger.info(f"🔄 批量重试失败图片: record={record_id}, 共 {len(pages)} 页")
             image_service = get_image_service()
 
             def generate():
                 """SSE 事件生成器"""
-                for event in image_service.retry_failed_images(task_id, pages):
+                for event in image_service.retry_failed_images(record_id, pages):
                     event_type = event["event"]
                     event_data = event["data"]
 
@@ -346,7 +414,7 @@ def create_image_blueprint():
         停止图片生成
 
         请求体：
-        - task_id: 任务 ID（必填）
+        - record_id: 记录 ID（必填）
 
         返回：
         - success: 是否成功
@@ -354,20 +422,20 @@ def create_image_blueprint():
         """
         try:
             data = request.get_json()
-            task_id = data.get('task_id')
+            record_id = data.get('record_id')
 
-            log_request('/stop-generation', {'task_id': task_id})
+            log_request('/stop-generation', {'record_id': record_id})
 
-            if not task_id:
-                logger.warning("停止生成请求缺少 task_id 参数")
+            if not record_id:
+                logger.warning("停止生成请求缺少 record_id 参数")
                 return jsonify({
                     "success": False,
-                    "error": "参数错误：task_id 不能为空"
+                    "error": "参数错误：record_id 不能为空"
                 }), 400
 
-            logger.info(f"⏹️ 请求停止任务: {task_id}")
+            logger.info(f"⏹️ 请求停止任务: {record_id}")
             image_service = get_image_service()
-            image_service.stop_task(task_id)
+            image_service.stop_task(record_id)
 
             return jsonify({
                 "success": True,
@@ -443,13 +511,13 @@ def create_image_blueprint():
 
     # ==================== 任务状态 ====================
 
-    @image_bp.route('/task/<task_id>', methods=['GET'])
-    def get_task_state(task_id):
+    @image_bp.route('/task/<record_id>', methods=['GET'])
+    def get_task_state(record_id):
         """
         获取任务状态
 
         路径参数：
-        - task_id: 任务 ID
+        - record_id: 记录 ID
 
         返回：
         - success: 是否成功
@@ -460,12 +528,12 @@ def create_image_blueprint():
         """
         try:
             image_service = get_image_service()
-            state = image_service.get_task_state(task_id)
+            state = image_service.get_task_state(record_id)
 
             if state is None:
                 return jsonify({
                     "success": False,
-                    "error": f"任务不存在：{task_id}\n可能原因：\n1. 任务ID错误\n2. 任务已过期或被清理\n3. 服务重启导致状态丢失"
+                    "error": f"任务不存在：{record_id}\n可能原因：\n1. 记录ID错误\n2. 任务已过期或被清理\n3. 服务重启导致状态丢失"
                 }), 404
 
             # 不返回封面图片数据（太大）
@@ -487,13 +555,13 @@ def create_image_blueprint():
                 "error": f"获取任务状态失败。\n错误详情: {error_msg}"
             }), 500
 
-    @image_bp.route('/task/<task_id>/images', methods=['GET'])
-    def get_task_images(task_id):
+    @image_bp.route('/task/<record_id>/images', methods=['GET'])
+    def get_task_images(record_id):
         """
         获取任务文件夹中已生成的图片列表（扫描文件系统）
 
         路径参数：
-        - task_id: 任务 ID
+        - record_id: 记录 ID
 
         返回：
         - success: 是否成功
@@ -504,11 +572,11 @@ def create_image_blueprint():
             image_service = get_image_service()
             
             # 扫描已生成的图片
-            generated_indices = image_service.scan_generated_images(task_id)
+            generated_indices = image_service.scan_generated_images(record_id)
             images = [f"{idx}.png" for idx in sorted(generated_indices)]
             
             # 尝试加载大纲信息
-            outline_data = image_service.load_outline_from_task(task_id)
+            outline_data = image_service.load_outline_from_record(record_id)
             
             result = {
                 "success": True,

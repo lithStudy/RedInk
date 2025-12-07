@@ -3,6 +3,7 @@ import axios from 'axios'
 const API_BASE_URL = '/api'
 
 export interface Page {
+  id?: number  // 页面数据库ID，用于匹配图片关联（避免索引偏移问题）
   index: number
   type: 'cover' | 'content' | 'summary'
   content: string
@@ -29,12 +30,14 @@ export interface OutlineResponse {
 }
 
 export interface ProgressEvent {
-  index: number
+  index?: number  // 页面索引（兼容旧版本）
+  page_id?: number  // 页面数据库ID（新版本使用）
   status: 'generating' | 'done' | 'error'
   current?: number
   total?: number
   image_url?: string
   message?: string
+  record_id?: string  // 记录ID（用于停止功能）
 }
 
 export interface FinishEvent {
@@ -50,9 +53,10 @@ export interface ToneResponse {
 }
 
 // 生成基调
-export async function generateTone(topic: string): Promise<ToneResponse & { record_id?: string }> {
+export async function generateTone(topic: string, recordId?: string): Promise<ToneResponse & { record_id?: string }> {
   const response = await axios.post<ToneResponse & { record_id?: string }>(`${API_BASE_URL}/tone`, {
-    topic
+    topic,
+    record_id: recordId
   })
   return response.data
 }
@@ -240,6 +244,7 @@ export interface HistoryRecord {
 export interface HistoryDetail {
   id: string
   title: string
+  topic?: string
   created_at: string
   updated_at: string
   outline: {
@@ -299,6 +304,7 @@ export async function getHistory(recordId: string): Promise<{
 export async function updateHistory(
   recordId: string,
   data: {
+    topic?: string
     outline?: { raw: string; pages: Page[]; metadata?: OutlineMetadata }
     images?: { generated: string[] }
     status?: string
@@ -457,6 +463,47 @@ export async function stopGeneration(recordId: string): Promise<{
   return response.data
 }
 
+// 生成单张图片（根据pageId，同步接口）
+export async function generateSingleImage(
+  recordId: string,
+  pageId: number,
+  fullOutline?: string,
+  userTopic?: string,
+  userImages?: File[],
+  referenceMode?: 'custom' | 'cover' | 'previous'
+): Promise<{
+  success: boolean
+  page_id?: number
+  image_url?: string
+  error?: string
+}> {
+  // 将用户图片转换为 base64
+  let userImagesBase64: string[] = []
+  if (userImages && userImages.length > 0) {
+    userImagesBase64 = await Promise.all(
+      userImages.map(file => {
+        return new Promise<string>((resolve, reject) => {
+          const reader = new FileReader()
+          reader.onload = () => resolve(reader.result as string)
+          reader.onerror = reject
+          reader.readAsDataURL(file)
+        })
+      })
+    )
+  }
+
+  const response = await axios.post(`${API_BASE_URL}/generate-single`, {
+    record_id: recordId,
+    page_id: pageId,
+    full_outline: fullOutline || '',
+    user_topic: userTopic || '',
+    user_images: userImagesBase64.length > 0 ? userImagesBase64 : undefined,
+    reference_mode: referenceMode || 'cover'
+  })
+  return response.data
+}
+
+
 // 继续图片生成（SSE）- 自动扫描未完成的页面
 export async function continueGeneration(
   recordId: string,
@@ -513,7 +560,15 @@ export async function continueGeneration(
 
           switch (eventType) {
             case 'continue_start':
-              onProgress({ index: -1, status: 'generating', message: data.message })
+              // 传递完整数据，包括 total 和 completed 用于更新进度
+              onProgress({ 
+                index: -1, 
+                status: 'generating', 
+                message: data.message,
+                total: data.total,
+                current: data.completed,
+                ...data
+              })
               break
             case 'progress':
               onProgress(data)

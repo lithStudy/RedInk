@@ -18,7 +18,7 @@ const router = createRouter({
       path: '/outline',
       name: 'outline',
       component: OutlineView
-      // 支持 query 参数: ?recordId=xxx 或 ?taskId=xxx
+      // 支持 query 参数: ?recordId=xxx（统一使用 recordId）
     },
     {
       path: '/generate',

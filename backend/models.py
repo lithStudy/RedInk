@@ -74,6 +74,7 @@ class RecordModel:
     def update(
         record_id: str,
         title: Optional[str] = None,
+        topic: Optional[str] = None,
         status: Optional[str] = None,
         reference_images: Optional[List[str]] = None
     ) -> bool:
@@ -83,6 +84,7 @@ class RecordModel:
         Args:
             record_id: 记录 ID
             title: 标题
+            topic: 主题
             status: 状态
             reference_images: 参考图片路径列表
             
@@ -99,6 +101,10 @@ class RecordModel:
         if title is not None:
             updates.append("title = ?")
             params.append(title)
+        
+        if topic is not None:
+            updates.append("topic = ?")
+            params.append(topic)
         
         if status is not None:
             updates.append("status = ?")
@@ -475,6 +481,29 @@ class OutlineModel:
         db.execute(query, tuple(params))
         
         return True
+    
+    @staticmethod
+    def delete_by_tone(tone_id: int) -> bool:
+        """
+        删除基调关联的大纲（同时删除关联的页面）
+        
+        Args:
+            tone_id: 基调 ID
+            
+        Returns:
+            是否成功
+        """
+        db = get_database()
+        
+        # 先获取 outline_id
+        outline = OutlineModel.get_by_tone(tone_id)
+        if outline:
+            # 删除关联的页面
+            PageModel.delete_by_outline(outline['id'])
+            # 删除大纲
+            db.execute("DELETE FROM outlines WHERE id = ?", (outline['id'],))
+        
+        return True
 
 
 class PageModel:
@@ -568,6 +597,23 @@ class PageModel:
         return result
     
     @staticmethod
+    def get_by_id(page_id: int) -> Optional[Dict]:
+        """
+        根据页面ID获取页面
+        
+        Args:
+            page_id: 页面 ID
+            
+        Returns:
+            页面数据
+        """
+        db = get_database()
+        return db.fetchone(
+            "SELECT * FROM pages WHERE id = ?",
+            (page_id,)
+        )
+    
+    @staticmethod
     def get_by_outline_and_index(outline_id: int, page_index: int) -> Optional[Dict]:
         """
         获取指定页面
@@ -586,6 +632,55 @@ class PageModel:
         )
     
     @staticmethod
+    def update(
+        page_id: int,
+        page_index: int,
+        page_type: str,
+        content: str,
+        image_id: Optional[int] = None
+    ) -> bool:
+        """
+        更新页面信息
+        
+        Args:
+            page_id: 页面 ID
+            page_index: 页面索引
+            page_type: 页面类型
+            content: 页面内容
+            image_id: 关联的图片 ID
+            
+        Returns:
+            是否成功
+        """
+        db = get_database()
+        # 先检查页面是否存在
+        existing_page = db.fetchone("SELECT id FROM pages WHERE id = ?", (page_id,))
+        if not existing_page:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(f"⚠️ 更新页面失败：页面不存在 page_id={page_id}")
+            return False
+        
+        # 执行更新
+        with db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE pages 
+                SET page_index = ?, page_type = ?, content = ?, image_id = ?
+                WHERE id = ?
+            """, (page_index, page_type, content, image_id, page_id))
+            conn.commit()
+            # 检查是否真的更新了行
+            rows_affected = cursor.rowcount
+            if rows_affected == 0:
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.warning(f"⚠️ 更新页面失败：未更新任何行 page_id={page_id}")
+                return False
+        
+        return True
+    
+    @staticmethod
     def update_image(page_id: int, image_id: int) -> bool:
         """
         更新页面的图片关联
@@ -598,7 +693,50 @@ class PageModel:
             是否成功
         """
         db = get_database()
-        db.execute("UPDATE pages SET image_id = ? WHERE id = ?", (image_id, page_id))
+        # 先检查页面是否存在
+        existing_page = db.fetchone("SELECT id FROM pages WHERE id = ?", (page_id,))
+        if not existing_page:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(f"⚠️ 更新页面图片关联失败：页面不存在 page_id={page_id}, image_id={image_id}")
+            return False
+        
+        # 执行更新
+        with db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("UPDATE pages SET image_id = ? WHERE id = ?", (image_id, page_id))
+            conn.commit()
+            # 检查是否真的更新了行
+            rows_affected = cursor.rowcount
+            if rows_affected == 0:
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.warning(f"⚠️ 更新页面图片关联失败：未更新任何行 page_id={page_id}, image_id={image_id}")
+                return False
+        
+        # 验证更新是否成功
+        updated_page = db.fetchone("SELECT image_id FROM pages WHERE id = ?", (page_id,))
+        if updated_page and updated_page.get('image_id') == image_id:
+            return True
+        else:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"❌ 更新页面图片关联验证失败：page_id={page_id}, 期望 image_id={image_id}, 实际 image_id={updated_page.get('image_id') if updated_page else None}")
+            return False
+    
+    @staticmethod
+    def delete_by_id(page_id: int) -> bool:
+        """
+        根据页面ID删除页面
+        
+        Args:
+            page_id: 页面 ID
+            
+        Returns:
+            是否成功
+        """
+        db = get_database()
+        db.execute("DELETE FROM pages WHERE id = ?", (page_id,))
         return True
     
     @staticmethod
@@ -627,6 +765,9 @@ class PageModel:
         Returns:
             创建的页面 ID 列表
         """
+        import logging
+        logger = logging.getLogger(__name__)
+        
         db = get_database()
         page_ids = []
         
@@ -645,7 +786,23 @@ class PageModel:
                 ))
                 page_ids.append(cursor.lastrowid)
             conn.commit()
+            
+            # 🔥 重要：commit 后重新查询实际插入的 id，确保准确性
+            if page_ids and pages:
+                outline_id = pages[0]['outline_id']
+                cursor.execute("""
+                    SELECT id FROM pages 
+                    WHERE outline_id = ? 
+                    ORDER BY page_index
+                """, (outline_id,))
+                actual_ids = [row[0] for row in cursor.fetchall()]
+                
+                # 如果实际 id 和 lastrowid 不一致，使用实际 id
+                if actual_ids != page_ids:
+                    logger.warning(f"⚠️ bulk_create: lastrowid 不一致! lastrowid={page_ids}, 实际={actual_ids}")
+                    page_ids = actual_ids
         
+        logger.debug(f"📝 bulk_create: 创建了 {len(page_ids)} 个页面, ids={page_ids}")
         return page_ids
 
 

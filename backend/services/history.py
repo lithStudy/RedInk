@@ -74,6 +74,7 @@ class HistoryService:
             pages = PageModel.get_by_outline(outline['id'])
             record['outline']['pages'] = [
                 {
+                    'id': p['id'],  # 包含页面ID，用于匹配图片关联
                     'index': p['page_index'],
                     'type': p['page_type'],
                     'content': p['content'],
@@ -106,6 +107,7 @@ class HistoryService:
         self,
         record_id: str,
         title: Optional[str] = None,
+        topic: Optional[str] = None,
         status: Optional[str] = None,
         outline: Optional[Dict] = None,
         images: Optional[Dict] = None
@@ -116,6 +118,7 @@ class HistoryService:
         Args:
             record_id: 记录 ID
             title: 标题
+            topic: 主题
             status: 状态
             outline: 大纲数据（包含 raw, metadata, pages）
             images: 图片数据（暂时保留兼容性，实际图片通过 ImageModel 管理）
@@ -127,6 +130,7 @@ class HistoryService:
         RecordModel.update(
             record_id=record_id,
             title=title,
+            topic=topic,
             status=status
         )
         
@@ -144,25 +148,58 @@ class HistoryService:
                     metadata_tags=metadata.get('tags')
                 )
             
-            # 更新页面（删除旧的，创建新的）
+            # 更新页面（只更新内容，保持页面ID不变）
             if 'pages' in outline:
                 # 获取 outline_id（通过 tone_id）
                 tone = ToneModel.get_by_record(record_id)
                 if tone:
                     outline_obj = OutlineModel.get_by_tone(tone['id'])
                     if outline_obj:
-                        PageModel.delete_by_outline(outline_obj['id'])
-                        pages_data = [
-                            {
-                                'outline_id': outline_obj['id'],
-                                'page_index': page['index'],
-                                'page_type': page['type'],
-                                'content': page['content'],
-                                'image_id': None
-                            }
-                            for page in outline['pages']
-                        ]
-                        PageModel.bulk_create(pages_data)
+                        # 获取现有页面
+                        existing_pages = PageModel.get_by_outline(outline_obj['id'])
+                        existing_page_ids = {p['id'] for p in existing_pages}
+                        existing_pages_by_id = {p['id']: p for p in existing_pages}
+                        
+                        # 收集传入的页面 ID
+                        incoming_page_ids = {p.get('id') for p in outline['pages'] if p.get('id')}
+                        
+                        # 更新或创建页面
+                        for page in outline['pages']:
+                            page_id = page.get('id')
+                            
+                            # 确定 image_id
+                            image_id = None
+                            if page_id and page_id in existing_pages_by_id:
+                                # 保留现有的 image_id
+                                image_id = existing_pages_by_id[page_id].get('image_id')
+                            
+                            # 如果前端传递了 image.id，优先使用
+                            if isinstance(page.get('image'), dict) and page['image'].get('id'):
+                                image_id = page['image']['id']
+                            
+                            if page_id and page_id in existing_page_ids:
+                                # 🔥 更新现有页面（保持ID不变）
+                                PageModel.update(
+                                    page_id=page_id,
+                                    page_index=page['index'],
+                                    page_type=page['type'],
+                                    content=page['content'],
+                                    image_id=image_id
+                                )
+                            else:
+                                # 创建新页面（没有ID的页面）
+                                PageModel.create(
+                                    outline_id=outline_obj['id'],
+                                    page_index=page['index'],
+                                    page_type=page['type'],
+                                    content=page['content'],
+                                    image_id=image_id
+                                )
+                        
+                        # 删除不在新列表中的页面
+                        pages_to_delete = existing_page_ids - incoming_page_ids
+                        for page_id in pages_to_delete:
+                            PageModel.delete_by_id(page_id)
         
         return True
 
@@ -187,7 +224,7 @@ class HistoryService:
         RecordModel.delete(record_id)
         
         # 删除图片文件
-        # 注意：由于没有 task_id，我们需要遍历 history 目录查找图片
+        # 注意：图片存储在 history/{record_id}/ 目录下
         # 图片文件名格式：{record_id}_{timestamp}_{random}.png
         for img in images:
             # 删除原图
@@ -281,22 +318,22 @@ class HistoryService:
             "by_status": status_count
         }
 
-    def scan_and_sync_task_images(self, task_id: str) -> Dict[str, Any]:
+    def scan_and_sync_task_images(self, record_id: str) -> Dict[str, Any]:
         """
         扫描任务文件夹，同步图片列表（兼容迁移前的数据）
         
         Args:
-            task_id: 任务ID
+            record_id: 记录ID
             
         Returns:
             扫描结果
         """
-        task_dir = os.path.join(self.history_dir, task_id)
+        task_dir = os.path.join(self.history_dir, record_id)
 
         if not os.path.exists(task_dir) or not os.path.isdir(task_dir):
             return {
                 "success": False,
-                "error": f"任务目录不存在: {task_id}"
+                "error": f"任务目录不存在: {record_id}"
             }
 
         try:
@@ -314,7 +351,7 @@ class HistoryService:
 
             return {
                 "success": True,
-                "task_id": task_id,
+                "record_id": record_id,
                 "images_count": len(image_files),
                 "images": image_files
             }
@@ -351,11 +388,11 @@ class HistoryService:
                 if not os.path.isdir(item_path):
                     continue
 
-                # 假设任务文件夹名就是 task_id
-                task_id = item
+                # 假设任务文件夹名就是 record_id
+                record_id = item
 
                 # 扫描并同步
-                result = self.scan_and_sync_task_images(task_id)
+                result = self.scan_and_sync_task_images(record_id)
                 results.append(result)
 
                 if result.get("success"):

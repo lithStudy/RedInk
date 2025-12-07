@@ -26,19 +26,22 @@ def create_outline_blueprint():
         生成内容基调
 
         请求格式：application/json
-        - topic: 主题文本
+        - topic: 主题文本（必填）
+        - record_id: 记录ID（可选，如果提供则更新现有记录，否则创建新记录）
 
         返回：
         - success: 是否成功
         - tone: 基调文本
+        - record_id: 记录ID
         """
         start_time = time.time()
 
         try:
             data = request.get_json()
             topic = data.get('topic') if data else None
+            record_id = data.get('record_id') if data else None
 
-            log_request('/tone', {'topic': topic})
+            log_request('/tone', {'topic': topic, 'record_id': record_id})
 
             # 验证必填参数
             if not topic:
@@ -48,11 +51,20 @@ def create_outline_blueprint():
                     "error": "参数错误：topic 不能为空。\n请提供要生成基调的主题内容。"
                 }), 400
 
-            # 先创建记录
+            # 如果提供了 record_id，使用现有记录；否则创建新记录
             from backend.services.history import get_history_service
             history_service = get_history_service()
-            record_id = history_service.create_record(topic=topic, title="", status="draft")
-            logger.info(f"✅ 创建记录: record_id={record_id}")
+            
+            if record_id:
+                # 使用现有记录，更新主题
+                logger.info(f"🔄 使用现有记录更新基调: record_id={record_id}")
+                # 更新记录的主题
+                from backend.models import RecordModel
+                RecordModel.update(record_id=record_id, topic=topic)
+            else:
+                # 创建新记录
+                record_id = history_service.create_record(topic=topic, title="", status="draft")
+                logger.info(f"✅ 创建新记录: record_id={record_id}")
             
             # 调用基调生成服务
             logger.info(f"🔄 开始生成基调，主题: {topic[:50]}...")

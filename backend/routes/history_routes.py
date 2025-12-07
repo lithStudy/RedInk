@@ -32,8 +32,8 @@ def create_history_blueprint():
 
         请求体：
         - topic: 主题标题（必填）
-        - outline: 大纲内容（必填）
-        - task_id: 关联的任务 ID（可选）
+        - outline: 大纲内容（可选，用于兼容旧代码）
+        - record_id: 关联的记录 ID（可选，如果提供则使用该ID）
 
         返回：
         - success: 是否成功
@@ -43,16 +43,24 @@ def create_history_blueprint():
             data = request.get_json()
             topic = data.get('topic')
             outline = data.get('outline')
-            task_id = data.get('task_id')
+            record_id = data.get('record_id')  # 如果提供了 record_id，使用它（用于关联已有记录）
 
-            if not topic or not outline:
+            if not topic:
                 return jsonify({
                     "success": False,
-                    "error": "参数错误：topic 和 outline 不能为空。\n请提供主题和大纲内容。"
+                    "error": "参数错误：topic 不能为空。\n请提供主题。"
                 }), 400
 
             history_service = get_history_service()
-            record_id = history_service.create_record(topic, outline, task_id)
+            # 如果提供了 record_id，直接返回（记录已存在）
+            if record_id:
+                return jsonify({
+                    "success": True,
+                    "record_id": record_id
+                }), 200
+            
+            # 否则创建新记录
+            record_id = history_service.create_record(topic)
 
             return jsonify({
                 "success": True,
@@ -145,6 +153,7 @@ def create_history_blueprint():
         - record_id: 记录 ID
 
         请求体（均为可选）：
+        - topic: 主题
         - outline: 大纲内容
         - images: 图片信息
         - status: 状态
@@ -155,6 +164,7 @@ def create_history_blueprint():
         """
         try:
             data = request.get_json()
+            topic = data.get('topic')
             outline = data.get('outline')
             images = data.get('images')
             status = data.get('status')
@@ -162,6 +172,7 @@ def create_history_blueprint():
             history_service = get_history_service()
             success = history_service.update_record(
                 record_id,
+                topic=topic,
                 outline=outline,
                 images=images,
                 status=status
@@ -282,13 +293,13 @@ def create_history_blueprint():
 
     # ==================== 扫描和同步 ====================
 
-    @history_bp.route('/history/scan/<task_id>', methods=['GET'])
-    def scan_task(task_id):
+    @history_bp.route('/history/scan/<record_id>', methods=['GET'])
+    def scan_task(record_id):
         """
         扫描单个任务并同步图片列表
 
         路径参数：
-        - task_id: 任务 ID
+        - record_id: 记录 ID
 
         返回：
         - success: 是否成功
@@ -296,7 +307,7 @@ def create_history_blueprint():
         """
         try:
             history_service = get_history_service()
-            result = history_service.scan_and_sync_task_images(task_id)
+            result = history_service.scan_and_sync_task_images(record_id)
 
             if not result.get("success"):
                 return jsonify(result), 404
@@ -363,14 +374,14 @@ def create_history_blueprint():
                 }), 404
 
             # 使用 record_id 作为任务目录（图片存储在 history/{record_id}/ 目录下）
-            task_id = record_id
+            record_id_for_dir = record_id
 
             # 获取任务目录
-            task_dir = os.path.join(history_service.history_dir, task_id)
+            task_dir = os.path.join(history_service.history_dir, record_id_for_dir)
             if not os.path.exists(task_dir):
                 return jsonify({
                     "success": False,
-                    "error": f"任务目录不存在：{task_id}"
+                    "error": f"任务目录不存在：{record_id_for_dir}"
                 }), 404
 
             # 获取页面顺序（从 outline.pages）

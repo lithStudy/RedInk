@@ -365,10 +365,20 @@ class OutlineService:
                     logger.info(f"创建空基调: record_id={record_id}, tone_id={tone_id}")
             else:
                 tone_id = tone_obj['id']
+                
+                # 🔥 重要：先删除旧的大纲和页面（在更新 tone 之前）
+                existing_outline = OutlineModel.get_by_tone(tone_id)
+                if existing_outline:
+                    logger.info(f"🗑️ 删除旧的大纲和页面: outline_id={existing_outline['id']}")
+                    OutlineModel.delete_by_tone(tone_id)
+                
                 # 如果提供了新的 tone，更新它
                 if tone and tone != tone_obj['tone_text']:
                     ToneModel.update(record_id=record_id, tone_text=tone)
-                    logger.info(f"更新基调: record_id={record_id}, tone_id={tone_id}")
+                    # 🔥 重要：ToneModel.update 会删除旧 tone 并创建新 tone，需要重新获取 tone_id
+                    tone_obj = ToneModel.get_by_record(record_id)
+                    tone_id = tone_obj['id']
+                    logger.info(f"更新基调: record_id={record_id}, new_tone_id={tone_id}")
             
             # 保存大纲到数据库（使用 tone_id）
             outline_id = OutlineModel.create(
@@ -391,8 +401,17 @@ class OutlineService:
                 }
                 for page in pages
             ]
-            PageModel.bulk_create(pages_data)
-            logger.info(f"页面已保存到数据库: {len(pages)} 页")
+            page_ids = PageModel.bulk_create(pages_data)
+            logger.info(f"页面已保存到数据库: {len(pages)} 页, page_ids={page_ids}")
+            
+            # 将数据库ID映射到对应的页面
+            pages_with_ids = []
+            for i, page in enumerate(pages):
+                page_with_id = page.copy()
+                page_with_id['id'] = page_ids[i] if i < len(page_ids) else None
+                pages_with_ids.append(page_with_id)
+            
+            logger.info(f"✅ 返回给前端的 page_ids: {[p.get('id') for p in pages_with_ids]}")
             
             # 更新 record 的 title
             RecordModel.update(record_id=record_id, title=metadata.get('title'))
@@ -400,7 +419,7 @@ class OutlineService:
             return {
                 "success": True,
                 "outline": outline_text,
-                "pages": pages,
+                "pages": pages_with_ids,
                 "has_images": images is not None and len(images) > 0,
                 "metadata": metadata
             }
@@ -548,21 +567,54 @@ class OutlineService:
                 }
             outline_id = outline['id']
             
-            # 删除旧的页面
-            PageModel.delete_by_outline(outline_id)
+            # 获取现有页面列表
+            existing_pages = PageModel.get_by_outline(outline_id)
+            existing_page_ids = {page['id'] for page in existing_pages}
+            existing_page_by_id = {page['id']: page for page in existing_pages}
             
-            # 创建新的页面
-            pages_data = [
-                {
-                    'outline_id': outline_id,
-                    'page_index': page['index'],
-                    'page_type': page['type'],
-                    'content': page['content'],
-                    'image_id': page.get('image_id')
-                }
-                for page in pages
-            ]
-            PageModel.bulk_create(pages_data)
+            # 收集新页面列表中的页面ID
+            new_page_ids = set()
+            for page in pages:
+                if page.get('id'):
+                    new_page_ids.add(page['id'])
+            
+            # 更新或创建页面
+            for page in pages:
+                page_id = page.get('id')
+                image_id = None
+                
+                # 确定 image_id
+                if page_id and page_id in existing_page_by_id:
+                    # 如果页面已存在，保留原有的 image_id
+                    image_id = existing_page_by_id[page_id].get('image_id')
+                
+                # 如果前端传递了 image.id，优先使用（用于更新图片关联）
+                if isinstance(page.get('image'), dict) and page['image'].get('id'):
+                    image_id = page['image']['id']
+                
+                if page_id and page_id in existing_page_ids:
+                    # 更新现有页面
+                    PageModel.update(
+                        page_id=page_id,
+                        page_index=page['index'],
+                        page_type=page['type'],
+                        content=page['content'],
+                        image_id=image_id
+                    )
+                else:
+                    # 创建新页面
+                    PageModel.create(
+                        outline_id=outline_id,
+                        page_index=page['index'],
+                        page_type=page['type'],
+                        content=page['content'],
+                        image_id=image_id
+                    )
+            
+            # 删除不在新列表中的页面
+            pages_to_delete = existing_page_ids - new_page_ids
+            for page_id in pages_to_delete:
+                PageModel.delete_by_id(page_id)
             
             # 重新生成 outline 文本
             outline_text = "\n\n<page>\n\n".join([page['content'] for page in pages])

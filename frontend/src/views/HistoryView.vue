@@ -1,88 +1,100 @@
 <template>
-  <div class="container" style="max-width: 1200px;">
-
-    <!-- Header Area -->
-    <div class="page-header">
-      <div>
-        <h1 class="page-title">我的创作</h1>
-      </div>
-      <div style="display: flex; gap: 10px;">
-        <button class="btn btn-primary" @click="router.push('/')">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 6px;"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
-          新建图文
-        </button>
-      </div>
-    </div>
-
-    <!-- Stats Overview -->
-    <StatsOverview v-if="stats" :stats="stats" />
-
-    <!-- Toolbar: Tabs & Search -->
-    <div class="toolbar-wrapper">
-      <div class="tabs-container" style="margin-bottom: 0; border-bottom: none;">
-        <div
-          class="tab-item"
-          :class="{ active: currentTab === 'all' }"
-          @click="switchTab('all')"
-        >
-          全部
+  <div class="history-page">
+    <!-- 主内容区域 -->
+    <div class="history-content">
+      <!-- Header Area -->
+      <div class="page-header-card">
+        <div class="header-info">
+          <h1 class="page-title">我的创作</h1>
         </div>
-        <div
-          class="tab-item"
-          :class="{ active: currentTab === 'completed' }"
-          @click="switchTab('completed')"
-        >
-          已完成
-        </div>
-        <div
-          class="tab-item"
-          :class="{ active: currentTab === 'draft' }"
-          @click="switchTab('draft')"
-        >
-          草稿箱
+        <div class="header-actions">
+          <button class="btn btn-primary btn-sm" @click="router.push('/')">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="12" y1="5" x2="12" y2="19"></line>
+              <line x1="5" y1="12" x2="19" y2="12"></line>
+            </svg>
+            新建图文
+          </button>
         </div>
       </div>
 
-      <div class="search-mini">
-        <svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
-        <input
-          v-model="searchKeyword"
-          type="text"
-          placeholder="搜索标题..."
-          @keyup.enter="handleSearch"
+      <!-- Stats Overview -->
+      <StatsOverview v-if="stats" :stats="stats" />
+
+      <!-- Toolbar: Tabs & Search -->
+      <div class="toolbar-card">
+        <div class="tabs-container">
+          <div
+            class="tab-item"
+            :class="{ active: currentTab === 'all' }"
+            @click="switchTab('all')"
+          >
+            全部
+          </div>
+          <div
+            class="tab-item"
+            :class="{ active: currentTab === 'completed' }"
+            @click="switchTab('completed')"
+          >
+            已完成
+          </div>
+          <div
+            class="tab-item"
+            :class="{ active: currentTab === 'draft' }"
+            @click="switchTab('draft')"
+          >
+            草稿箱
+          </div>
+        </div>
+
+        <div class="search-mini">
+          <svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="11" cy="11" r="8"></circle>
+            <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+          </svg>
+          <input
+            v-model="searchKeyword"
+            type="text"
+            placeholder="搜索标题..."
+            @keyup.enter="handleSearch"
+          />
+        </div>
+      </div>
+
+      <!-- Content Area -->
+      <div v-if="loading" class="loading-state">
+        <div class="spinner"></div>
+      </div>
+
+      <div v-else-if="records.length === 0" class="empty-state-large">
+        <div class="empty-img">
+          <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
+            <polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline>
+            <line x1="12" y1="22.08" x2="12" y2="12"></line>
+          </svg>
+        </div>
+        <h3>暂无相关记录</h3>
+        <p class="empty-tips">去创建一个新的作品吧</p>
+      </div>
+
+      <div v-else class="gallery-grid">
+        <GalleryCard
+          v-for="record in records"
+          :key="record.id"
+          :record="record"
+          @preview="viewImages"
+          @edit="loadRecord"
+          @delete="confirmDelete"
         />
       </div>
-    </div>
 
-    <!-- Content Area -->
-    <div v-if="loading" class="loading-state">
-      <div class="spinner"></div>
-    </div>
-
-    <div v-else-if="records.length === 0" class="empty-state-large">
-      <div class="empty-img">
-        <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg>
+      <!-- Pagination -->
+      <div v-if="totalPages > 1" class="pagination-wrapper">
+        <button class="page-btn" :disabled="currentPage === 1" @click="changePage(currentPage - 1)">上一页</button>
+        <span class="page-indicator">{{ currentPage }} / {{ totalPages }}</span>
+        <button class="page-btn" :disabled="currentPage === totalPages" @click="changePage(currentPage + 1)">下一页</button>
       </div>
-      <h3>暂无相关记录</h3>
-      <p class="empty-tips">去创建一个新的作品吧</p>
-    </div>
-
-    <div v-else class="gallery-grid">
-      <GalleryCard
-        v-for="record in records"
-        :key="record.id"
-        :record="record"
-        @preview="viewImages"
-        @edit="loadRecord"
-        @delete="confirmDelete"
-      />
-    </div>
-
-    <!-- Pagination -->
-    <div v-if="totalPages > 1" class="pagination-wrapper">
-       <button class="page-btn" :disabled="currentPage === 1" @click="changePage(currentPage - 1)">Previous</button>
-       <span class="page-indicator">{{ currentPage }} / {{ totalPages }}</span>
-       <button class="page-btn" :disabled="currentPage === totalPages" @click="changePage(currentPage + 1)">Next</button>
     </div>
 
     <!-- Image Viewer Modal -->
@@ -208,9 +220,16 @@ async function handleSearch() {
  * 改为直接跳转，由 OutlineView 根据 URL 参数加载数据
  */
 async function loadRecord(id: string) {
-  // 直接跳转到 outline 页，携带 recordId 参数
-  // OutlineView 会根据 recordId 从后端加载完整数据
-  router.push(`/outline?recordId=${id}`)
+  console.log('📝 点击编辑按钮，recordId:', id)
+  try {
+    // 直接跳转到 outline 页，携带 recordId 参数
+    // OutlineView 会根据 recordId 从后端加载完整数据
+    await router.push(`/outline?recordId=${id}`)
+    console.log('✅ 已跳转到编辑页')
+  } catch (err) {
+    console.error('❌ 跳转失败:', err)
+    alert('跳转失败，请稍后重试')
+  }
 }
 
 /**
@@ -337,20 +356,130 @@ onMounted(async () => {
 </script>
 
 <style scoped>
-/* Toolbar */
-.toolbar-wrapper {
+/* 主容器 - 使用flex布局 */
+.history-page {
+  width: 100%;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.history-content {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  max-width: 1200px;
+  margin: 0 auto;
+  width: 100%;
+  padding: 16px;
+}
+
+/* 页面头部卡片 */
+.page-header-card {
+  background: white;
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+  padding: 16px;
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 24px;
+  gap: 16px;
+}
+
+.header-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.page-title {
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--text-main);
+  margin: 0;
+  letter-spacing: -0.5px;
+}
+
+.header-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+/* 按钮样式 */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border: none;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+  white-space: nowrap;
+}
+
+.btn-sm {
+  padding: 6px 12px;
+  font-size: 12px;
+}
+
+.btn-primary {
+  background: var(--primary);
+  color: white;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: var(--primary-hover);
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(255, 36, 66, 0.3);
+}
+
+/* Toolbar */
+.toolbar-card {
+  background: white;
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.tabs-container {
+  display: flex;
+  gap: 8px;
   border-bottom: 1px solid var(--border-color);
-  padding-bottom: 0;
+  padding-bottom: 12px;
+}
+
+.tab-item {
+  padding: 8px 16px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-sub);
+  cursor: pointer;
+  transition: all 0.2s;
+  user-select: none;
+}
+
+.tab-item:hover {
+  background: #f9f9f9;
+  color: var(--text-main);
+}
+
+.tab-item.active {
+  background: var(--primary-light);
+  color: var(--primary);
+  font-weight: 600;
 }
 
 .search-mini {
   position: relative;
-  width: 240px;
-  margin-bottom: 10px;
+  width: 100%;
 }
 
 .search-mini input {
@@ -377,12 +506,12 @@ onMounted(async () => {
   color: #ccc;
 }
 
-/* Gallery Grid */
+/* Gallery Grid - 使用grid布局，一行显示多张卡片 */
 .gallery-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-  gap: 24px;
-  margin-bottom: 40px;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 12px;
+  width: 100%;
 }
 
 /* Pagination */
@@ -391,15 +520,26 @@ onMounted(async () => {
   justify-content: center;
   align-items: center;
   gap: 16px;
-  margin-top: 40px;
+  margin-top: 16px;
+  padding: 16px;
+  background: white;
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
 }
 
 .page-btn {
   padding: 8px 16px;
   border: 1px solid var(--border-color);
   background: white;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
+  font-size: 13px;
+  transition: all 0.2s;
+}
+
+.page-btn:hover:not(:disabled) {
+  background: #f9f9f9;
+  border-color: var(--border-hover);
 }
 
 .page-btn:disabled {
@@ -407,20 +547,143 @@ onMounted(async () => {
   cursor: not-allowed;
 }
 
+.page-indicator {
+  font-size: 13px;
+  color: var(--text-sub);
+  font-weight: 500;
+}
+
 /* Empty State */
 .empty-state-large {
   text-align: center;
-  padding: 80px 0;
+  padding: 60px 20px;
   color: var(--text-sub);
+  background: white;
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
 }
 
 .empty-img {
   font-size: 64px;
   opacity: 0.5;
+  margin-bottom: 16px;
+}
+
+.empty-state-large h3 {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-main);
+  margin: 0 0 8px 0;
 }
 
 .empty-state-large .empty-tips {
-  margin-top: 10px;
+  margin: 0;
   color: var(--text-placeholder);
+  font-size: 14px;
+}
+
+/* Loading State */
+.loading-state {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 60px 20px;
+  background: white;
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+}
+
+.spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid var(--border-color);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* 响应式设计 */
+@media (max-width: 768px) {
+  .history-content {
+    padding: 12px;
+    gap: 12px;
+  }
+
+  .page-header-card {
+    flex-direction: column;
+    align-items: stretch;
+    padding: 12px;
+  }
+
+  .header-actions {
+    width: 100%;
+  }
+
+  .btn {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .toolbar-card {
+    padding: 12px;
+  }
+
+  .tabs-container {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .tab-item {
+    flex: 1;
+    min-width: 0;
+    text-align: center;
+    padding: 6px 12px;
+    font-size: 12px;
+  }
+
+  .gallery-grid {
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 10px;
+  }
+
+  .pagination-wrapper {
+    flex-direction: column;
+    gap: 12px;
+    padding: 12px;
+  }
+
+  .page-btn {
+    width: 100%;
+  }
+}
+
+@media (max-width: 480px) {
+  .history-content {
+    padding: 8px;
+    gap: 10px;
+  }
+
+  .page-title {
+    font-size: 20px;
+  }
+
+  .gallery-grid {
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    gap: 8px;
+  }
+
+  .empty-state-large {
+    padding: 40px 16px;
+  }
+
+  .empty-img {
+    font-size: 48px;
+  }
 }
 </style>

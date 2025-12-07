@@ -1,16 +1,19 @@
 <template>
-  <div class="container">
-    <div class="page-header">
-      <h1 class="page-title">系统设置</h1>
-      <p class="page-subtitle">配置文本生成和图片生成的 API 服务</p>
-    </div>
+  <div class="settings-page">
+    <div class="settings-content">
+      <div class="page-header-card">
+        <div class="header-info">
+          <h1 class="page-title">系统设置</h1>
+          <p class="page-subtitle">配置文本生成和图片生成的 API 服务</p>
+        </div>
+      </div>
 
-    <div v-if="loading" class="loading-container">
-      <div class="spinner"></div>
-      <p>加载配置中...</p>
-    </div>
+      <div v-if="loading" class="loading-container">
+        <div class="spinner"></div>
+        <p>加载配置中...</p>
+      </div>
 
-    <div v-else class="settings-container">
+      <div v-else class="settings-container">
       <!-- 文本生成配置 -->
       <div class="card">
         <div class="section-header">
@@ -92,6 +95,7 @@
       @test="testImageConnection"
       @update:formData="updateImageForm"
     />
+    </div>
   </div>
 </template>
 
@@ -168,9 +172,57 @@ onMounted(() => {
 </script>
 
 <style scoped>
-.settings-container {
+/* 主容器 - 使用flex布局 */
+.settings-page {
+  width: 100%;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.settings-content {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
   max-width: 900px;
   margin: 0 auto;
+  width: 100%;
+  padding: 16px;
+}
+
+/* 页面头部卡片 */
+.page-header-card {
+  background: white;
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+  padding: 16px;
+}
+
+.header-info {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.page-title {
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--text-main);
+  margin: 0;
+  letter-spacing: -0.5px;
+}
+
+.page-subtitle {
+  font-size: 13px;
+  color: var(--text-sub);
+  margin: 0;
+  line-height: 1.5;
+}
+
+.settings-container {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
 }
 
 .section-header {
@@ -178,6 +230,7 @@ onMounted(() => {
   justify-content: space-between;
   align-items: flex-start;
   margin-bottom: 20px;
+  gap: 12px;
 }
 
 .section-title {
@@ -200,6 +253,7 @@ onMounted(() => {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  white-space: nowrap;
 }
 
 /* 加载状态 */
@@ -208,7 +262,68 @@ onMounted(() => {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 80px 20px;
+  padding: 60px 20px;
   color: #666;
+  background: white;
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+}
+
+.spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid var(--border-color);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+  margin-bottom: 12px;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* 响应式设计 */
+@media (max-width: 768px) {
+  .settings-content {
+    padding: 12px;
+    gap: 12px;
+  }
+
+  .page-header-card {
+    padding: 12px;
+  }
+
+  .page-title {
+    font-size: 20px;
+  }
+
+  .section-header {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+  }
+
+  .btn-small {
+    width: 100%;
+    justify-content: center;
+  }
+}
+
+@media (max-width: 480px) {
+  .settings-content {
+    padding: 8px;
+    gap: 10px;
+  }
+
+  .section-title {
+    font-size: 16px;
+  }
+
+  .section-desc {
+    font-size: 13px;
+  }
 }
 </style>
